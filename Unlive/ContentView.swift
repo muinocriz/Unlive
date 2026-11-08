@@ -67,7 +67,11 @@ struct ContentView: View {
                 photoLibrary: .shared()
             )
             .navigationDestination(isPresented: $showingConfirm) {
-                ConfirmView(identifiers: selectedItems.compactMap(\.itemIdentifier))
+                ConfirmView(identifiers: selectedItems.compactMap(\.itemIdentifier)) {
+                    // 处理完点"返回首页"：清空选择，回到首页
+                    showingConfirm = false
+                    selectedItems = []
+                }
             }
             .alert(
                 "需要相册的完全访问权限",
@@ -110,10 +114,11 @@ struct ContentView: View {
 
 struct ConfirmView: View {
     let identifiers: [String]
+    let onFinish: () -> Void
 
     @State private var foundCount: Int?
     @State private var videoBytes: Int64 = 0
-    @State private var showingNotReady = false
+    @State private var showingProcessing = false
 
     var body: some View {
         VStack(spacing: 16) {
@@ -135,7 +140,7 @@ struct ConfirmView: View {
             Spacer()
 
             Button {
-                showingNotReady = true
+                showingProcessing = true
             } label: {
                 Text("开始处理")
                     .font(.headline)
@@ -154,9 +159,8 @@ struct ConfirmView: View {
             videoBytes = result.bytes
             foundCount = result.found
         }
-        // 临时提示：转换功能在第 3 步加入
-        .alert("处理功能还在开发中", isPresented: $showingNotReady) {
-            Button("好", role: .cancel) {}
+        .navigationDestination(isPresented: $showingProcessing) {
+            ProcessingView(identifiers: identifiers, onFinish: onFinish)
         }
     }
 
@@ -179,6 +183,89 @@ struct ConfirmView: View {
             }
         }
         return (assets.count, total)
+    }
+}
+
+// MARK: - 处理页
+
+struct ProcessingView: View {
+    let identifiers: [String]
+    let onFinish: () -> Void
+
+    @State private var progress: Double = 0
+    @State private var statusText = "准备中…"
+    @State private var results: [ConversionResult]?
+
+    var body: some View {
+        Group {
+            if let results {
+                resultList(results)
+            } else {
+                VStack(spacing: 16) {
+                    Spacer()
+                    ProgressView(value: progress)
+                    Text(statusText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("处理过程中请不要离开 App")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding()
+            }
+        }
+        .navigationTitle(results == nil ? "正在处理" : "处理结果")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .task {
+            guard results == nil else { return }
+            // 处理时不让屏幕自动锁定，否则 App 进入后台会中断处理
+            UIApplication.shared.isIdleTimerDisabled = true
+            let finished = await LivePhotoConverter.convert(identifiers: identifiers) { value, text in
+                Task { @MainActor in
+                    progress = value
+                    statusText = text
+                }
+            }
+            UIApplication.shared.isIdleTimerDisabled = false
+            results = finished
+        }
+    }
+
+    /// 临时的结果汇总（完整的结果页在第 5 步做）
+    private func resultList(_ results: [ConversionResult]) -> some View {
+        let succeeded = results.filter(\.succeeded)
+        let failed = results.filter { !$0.succeeded }
+        let warned = succeeded.filter { !$0.warnings.isEmpty }
+
+        return List {
+            Section {
+                Text("成功生成 \(succeeded.count) 张静态照片")
+                if !failed.isEmpty {
+                    Text("失败 \(failed.count) 张")
+                        .foregroundStyle(.red)
+                }
+                Text("原实况照片都还在，这一步不会删除")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            if !failed.isEmpty {
+                Section("失败原因") {
+                    ForEach(failed) { Text($0.errorMessage ?? "未知错误") }
+                }
+            }
+            if !warned.isEmpty {
+                Section("需要注意") {
+                    ForEach(warned) { result in
+                        ForEach(result.warnings, id: \.self) { Text($0) }
+                    }
+                }
+            }
+            Section {
+                Button("返回首页", action: onFinish)
+            }
+        }
     }
 }
 
