@@ -19,7 +19,7 @@ struct ContentView: View {
             PhotosPicker(
                 selection: $selectedItems,
                 maxSelectionCount: nil,
-                selectionBehavior: .continuousAndOrdered,
+                selectionBehavior: .continuous,
                 matching: .livePhotos,
                 photoLibrary: .shared()
             ) {
