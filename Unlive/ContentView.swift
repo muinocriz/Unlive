@@ -139,6 +139,11 @@ struct ConfirmView: View {
             }
             Spacer()
 
+            Text("处理完成后，系统会请你确认删除原实况照片。删除的照片会先放进“最近删除”，30 天内可恢复。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
             Button {
                 showingProcessing = true
             } label: {
