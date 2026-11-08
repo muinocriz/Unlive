@@ -56,13 +56,13 @@ struct ContentView: View {
                 }
             }
             .padding()
-            // 从底部弹出系统照片选择器：只显示实况照片，多选不限数量。
+            // 从底部弹出系统照片选择器：只显示实况照片，最多选 100 张（一次复制太多可能把存储空间写满）。
             // 不用嵌入模式，因为嵌入时系统不支持滑动多选。
             // 必须传 photoLibrary: .shared()，否则拿不到照片的 itemIdentifier，后面就找不到原图。
             .photosPicker(
                 isPresented: $showingPicker,
                 selection: $selectedItems,
-                maxSelectionCount: nil,
+                maxSelectionCount: 100,
                 matching: .livePhotos,
                 photoLibrary: .shared()
             )
@@ -118,6 +118,9 @@ struct ConfirmView: View {
 
     @State private var foundCount: Int?
     @State private var videoBytes: Int64 = 0
+    @State private var editedIDs: [String] = []
+    @State private var showingEditedWarning = false
+    @State private var idsToProcess: [String] = []
     @State private var showingProcessing = false
 
     var body: some View {
@@ -145,7 +148,11 @@ struct ConfirmView: View {
                 .multilineTextAlignment(.center)
 
             Button {
-                showingProcessing = true
+                if editedIDs.isEmpty {
+                    start(identifiers)
+                } else {
+                    showingEditedWarning = true
+                }
             } label: {
                 Text("开始处理")
                     .font(.headline)
@@ -162,11 +169,32 @@ struct ConfirmView: View {
             let ids = identifiers
             let result = await Task.detached { Self.measureVideoSize(identifiers: ids) }.value
             videoBytes = result.bytes
+            editedIDs = result.edited
             foundCount = result.found
         }
-        .navigationDestination(isPresented: $showingProcessing) {
-            ProcessingView(identifiers: identifiers, onFinish: onFinish)
+        // 有编辑过的照片时先提醒：处理后无法复原编辑。选"跳过"的就当没选过，不处理也不删除。
+        .confirmationDialog("有 \(editedIDs.count) 张照片编辑过", isPresented: $showingEditedWarning, titleVisibility: .visible) {
+            Button("全部处理") {
+                start(identifiers)
+            }
+            if editedIDs.count < identifiers.count {
+                Button("跳过编辑过的照片") {
+                    let edited = Set(editedIDs)
+                    start(identifiers.filter { !edited.contains($0) })
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这些照片会按编辑后的样子生成静态照片，删除原图后将无法再“复原”编辑。")
         }
+        .navigationDestination(isPresented: $showingProcessing) {
+            ProcessingView(identifiers: idsToProcess, onFinish: onFinish)
+        }
+    }
+
+    private func start(_ ids: [String]) {
+        idsToProcess = ids
+        showingProcessing = true
     }
 
     private func formatMB(_ bytes: Int64) -> String {
@@ -175,11 +203,16 @@ struct ConfirmView: View {
 
     /// 只统计实况照片里视频部分的大小（删掉原图后真正能省下的就是这些）。
     /// 编辑过的实况照片会额外保存编辑后的视频和编辑前的原始视频，也一起算上。
-    nonisolated static func measureVideoSize(identifiers: [String]) -> (found: Int, bytes: Int64) {
+    /// 同时找出编辑过的照片，开始处理前要提醒用户。
+    nonisolated static func measureVideoSize(identifiers: [String]) -> (found: Int, bytes: Int64, edited: [String]) {
         let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
         let videoTypes: Set<PHAssetResourceType> = [.pairedVideo, .fullSizePairedVideo, .adjustmentBasePairedVideo]
         var total: Int64 = 0
+        var edited: [String] = []
         assets.enumerateObjects { asset, _, _ in
+            if LivePhotoConverter.isEdited(asset) {
+                edited.append(asset.localIdentifier)
+            }
             for resource in PHAssetResource.assetResources(for: asset) where videoTypes.contains(resource.type) {
                 // 系统没有公开的"文件大小"接口，这里读取资源自带的 fileSize 属性，只用于估算
                 if let size = resource.value(forKey: "fileSize") as? Int64 {
@@ -187,7 +220,7 @@ struct ConfirmView: View {
                 }
             }
         }
-        return (assets.count, total)
+        return (assets.count, total, edited)
     }
 }
 

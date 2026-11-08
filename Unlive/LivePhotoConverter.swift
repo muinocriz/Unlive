@@ -56,6 +56,12 @@ nonisolated enum LivePhotoConverter {
 
             let label = asset.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的照片" } ?? "一张照片"
 
+            // 共享相簿、从电脑同步来的照片无法删除；混进去会让整批删除失败，所以直接跳过
+            guard asset.sourceType == .typeUserLibrary else {
+                results.append(ConversionResult(originalID: id, label: label, errorMessage: "这张照片来自共享相簿或电脑同步，无法删除原图，已跳过"))
+                continue
+            }
+
             do {
                 let (newID, warnings) = try await convertOne(asset) { downloadFraction in
                     progress((Double(index) + downloadFraction) / total, "\(stepText)（正在从 iCloud 下载 \(Int(downloadFraction * 100))%）")
@@ -68,6 +74,11 @@ nonisolated enum LivePhotoConverter {
 
         progress(1, "处理完成")
         return results
+    }
+
+    /// 是不是编辑过（包括长曝光等效果）。这类照片会用编辑后的样子生成，处理后无法再"复原"编辑。
+    static func isEdited(_ asset: PHAsset) -> Bool {
+        PHAssetResource.assetResources(for: asset).contains { $0.type == .fullSizePhoto || $0.type == .adjustmentData }
     }
 
     /// 处理一张照片，返回新照片的 localIdentifier 和警告
@@ -115,6 +126,8 @@ nonisolated enum LivePhotoConverter {
                 request.creationDate = asset.creationDate
                 request.location = asset.location
                 request.isFavorite = asset.isFavorite
+                // 隐藏的照片，副本也要隐藏，否则删掉原图后它就"变回可见"了
+                request.isHidden = asset.isHidden
 
                 guard let placeholder = request.placeholderForCreatedAsset else { return }
                 created.value = placeholder.localIdentifier
