@@ -6,20 +6,45 @@
 //
 
 import SwiftUI
+import PhotosUI
 
 struct ContentView: View {
+    @State private var selectedItems: [PhotosPickerItem] = []
+    @State private var showingSelectionAlert = false
+
     var body: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "livephoto.slash")
-                .font(.system(size: 56))
-                .foregroundStyle(.tint)
-            Text("定格")
-                .font(.largeTitle.bold())
-            Text("把实况照片变成静态照片，节省空间")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+        VStack(spacing: 0) {
+            // 嵌入式系统照片选择器：只显示实况照片，多选不限数量。
+            // 必须传 photoLibrary: .shared()，否则拿不到照片的 itemIdentifier，后面就找不到原图。
+            PhotosPicker(
+                selection: $selectedItems,
+                maxSelectionCount: nil,
+                selectionBehavior: .continuousAndOrdered,
+                matching: .livePhotos,
+                photoLibrary: .shared()
+            ) {
+                Text("选择实况照片")
+            }
+            .photosPickerStyle(.inline)
+            // 隐藏选择器自带的"取消/添加"按钮，用下面我们自己的"完成"按钮
+            .photosPickerDisabledCapabilities(.selectionActions)
+            .ignoresSafeArea(edges: .top)
+
+            Button {
+                showingSelectionAlert = true
+            } label: {
+                Text(selectedItems.isEmpty ? "完成" : "完成（\(selectedItems.count)）")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(selectedItems.isEmpty)
+            .padding()
         }
-        .padding()
+        .alert("已选 \(selectedItems.count) 张实况照片", isPresented: $showingSelectionAlert) {
+            Button("好", role: .cancel) {}
+        }
     }
 }
 
