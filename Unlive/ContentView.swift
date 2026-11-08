@@ -192,14 +192,26 @@ struct ProcessingView: View {
     let identifiers: [String]
     let onFinish: () -> Void
 
+    /// 删除原图这一步的结果
+    enum DeletionOutcome {
+        case nothingToDelete      // 没有转换成功的照片，什么都不删
+        case deleted(Int)         // 原图已删除
+        case declined             // 用户在系统弹窗里点了"不允许"
+        case failed(String)       // 删除时出错
+        case copiesKept           // 原图没删，用户选择保留副本
+        case copiesDeleted        // 原图没删，用户选择删除副本，且已删除
+    }
+
     @State private var progress: Double = 0
     @State private var statusText = "准备中…"
     @State private var results: [ConversionResult]?
+    @State private var deletion: DeletionOutcome?
+    @State private var copyDeletionError: String?
 
     var body: some View {
         Group {
-            if let results {
-                resultList(results)
+            if let results, let deletion {
+                resultList(results, deletion: deletion)
             } else {
                 VStack(spacing: 16) {
                     Spacer()
@@ -228,13 +240,41 @@ struct ProcessingView: View {
                     statusText = text
                 }
             }
+            statusText = "正在删除原实况照片…"
+            let outcome = await deleteOriginals(of: finished)
             UIApplication.shared.isIdleTimerDisabled = false
+            deletion = outcome
             results = finished
         }
     }
 
+    /// 全部转换完后，一次性删除转换成功的原图（新照片都已确认写入相册）
+    private func deleteOriginals(of results: [ConversionResult]) async -> DeletionOutcome {
+        let ids = results.filter(\.succeeded).map(\.originalID)
+        guard !ids.isEmpty else { return .nothingToDelete }
+        do {
+            try await LivePhotoConverter.deleteAssets(identifiers: ids)
+            return .deleted(ids.count)
+        } catch {
+            return LivePhotoConverter.isUserCancelled(error) ? .declined : .failed(error.localizedDescription)
+        }
+    }
+
+    /// 原图没删时，用户选择删除刚生成的副本（同样会弹系统确认框）
+    private func deleteCopies(of results: [ConversionResult]) async {
+        do {
+            try await LivePhotoConverter.deleteAssets(identifiers: results.compactMap(\.newID))
+            copyDeletionError = nil
+            deletion = .copiesDeleted
+        } catch {
+            copyDeletionError = LivePhotoConverter.isUserCancelled(error)
+                ? "你没有允许删除，副本仍然保留着。"
+                : "删除副本失败：\(error.localizedDescription)"
+        }
+    }
+
     /// 临时的结果汇总（完整的结果页在第 5 步做）
-    private func resultList(_ results: [ConversionResult]) -> some View {
+    private func resultList(_ results: [ConversionResult], deletion: DeletionOutcome) -> some View {
         let succeeded = results.filter(\.succeeded)
         let failed = results.filter { !$0.succeeded }
         let warned = succeeded.filter { !$0.warnings.isEmpty }
@@ -246,10 +286,45 @@ struct ProcessingView: View {
                     Text("失败 \(failed.count) 张")
                         .foregroundStyle(.red)
                 }
-                Text("原实况照片都还在，这一步不会删除")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                switch deletion {
+                case .nothingToDelete:
+                    Text("没有转换成功的照片，原图都没有删除")
+                case .deleted(let count):
+                    Text("已删除 \(count) 张原实况照片")
+                case .copiesKept:
+                    Text("已保留静态副本，原实况照片也还在")
+                case .copiesDeleted:
+                    Text("已删除刚生成的静态副本，原实况照片还在")
+                case .declined, .failed:
+                    EmptyView()
+                }
             }
+
+            switch deletion {
+            case .declined, .failed:
+                Section("原图没有删除") {
+                    if case .failed(let message) = deletion {
+                        Text("删除原图时出错：\(message)")
+                            .foregroundStyle(.red)
+                    } else {
+                        Text("你在系统弹窗里没有允许删除。")
+                    }
+                    Text("静态副本已经生成，原实况照片仍在。请选择怎么处理刚生成的副本：")
+                    Button("保留副本") {
+                        self.deletion = .copiesKept
+                    }
+                    Button("删除刚生成的副本", role: .destructive) {
+                        Task { await deleteCopies(of: results) }
+                    }
+                    if let copyDeletionError {
+                        Text(copyDeletionError)
+                            .foregroundStyle(.red)
+                    }
+                }
+            default:
+                EmptyView()
+            }
+
             if !failed.isEmpty {
                 Section("失败原因") {
                     ForEach(failed) { Text($0.errorMessage ?? "未知错误") }

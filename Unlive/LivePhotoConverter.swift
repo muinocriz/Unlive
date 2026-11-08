@@ -3,7 +3,8 @@
 //  Unlive
 //
 //  把一张实况照片复制成静态照片：原样读取静态图的文件数据写入新照片（不重新编码），
-//  再把拍摄时间、位置、收藏状态和所在相册带过去。这里只生成，不删除原图。
+//  再把拍摄时间、位置、收藏状态和所在相册带过去。
+//  删除原图另外调用 deleteAssets，只在新照片确认写入成功后才删。
 //
 
 import Foundation
@@ -127,6 +128,21 @@ nonisolated enum LivePhotoConverter {
             throw ConversionError(message: "写入相册后没有找到新照片")
         }
         return (newID, warnings)
+    }
+
+    /// 在一次 performChanges 里删除这些照片，系统只弹一次确认框。用户点"不允许"会抛出错误。
+    static func deleteAssets(identifiers: [String]) async throws {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        guard assets.count > 0 else { return }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.deleteAssets(assets)
+        }
+    }
+
+    /// 是不是用户在系统删除弹窗里点了"不允许"
+    static func isUserCancelled(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == PHPhotosErrorDomain && nsError.code == PHPhotosError.userCancelled.rawValue
     }
 
     /// 读取资源的原始文件数据；只在 iCloud 上的会自动下载
