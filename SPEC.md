@@ -11,8 +11,10 @@
 ## 功能
 
 ### 1. 选照片
-- 打开 App 主界面直接嵌入系统照片选择器（`PHPickerViewController` / SwiftUI `PhotosPicker` 的嵌入模式，iOS 17+）
-- 只显示实况照片（`.livePhotos` 过滤），支持多选、不限数量
+- 主界面放一个"选择实况照片"按钮，点击后从底部弹出系统照片选择器（SwiftUI `PhotosPicker` 的弹出模式）
+  - 不用嵌入模式：系统选择器嵌入页面时不支持滑动多选，弹出时才支持（排查过程见 `问题记录.md`）
+- 只显示实况照片（`.livePhotos` 过滤），支持多选、不限数量；单击选一张，滑动可一次选多张（系统选择器自带）
+- 普通多选，不显示选择序号
 - 必须用 `PHPickerConfiguration(photoLibrary: .shared())` 初始化，确保能拿到照片的 `assetIdentifier`
 
 ### 2. 权限
