@@ -9,11 +9,15 @@ import SwiftUI
 
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
+        VStack(spacing: 12) {
+            Image(systemName: "livephoto.slash")
+                .font(.system(size: 56))
                 .foregroundStyle(.tint)
-            Text("Hello, world!")
+            Text("定格")
+                .font(.largeTitle.bold())
+            Text("把实况照片变成静态照片，节省空间")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
         .padding()
     }
