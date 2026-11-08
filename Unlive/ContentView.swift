@@ -68,7 +68,7 @@ struct ContentView: View {
             )
             .navigationDestination(isPresented: $showingConfirm) {
                 ConfirmView(identifiers: selectedItems.compactMap(\.itemIdentifier)) {
-                    // 处理完点"返回首页"：清空选择，回到首页
+                    // 结果页点"继续选择"：清空选择，回到首页
                     showingConfirm = false
                     selectedItems = []
                 }
@@ -191,33 +191,34 @@ struct ConfirmView: View {
     }
 }
 
-// MARK: - 处理页
+// MARK: - 处理页 / 结果页
 
 struct ProcessingView: View {
     let identifiers: [String]
     let onFinish: () -> Void
 
-    /// 删除原图这一步的结果
-    enum DeletionOutcome {
-        case nothingToDelete      // 没有转换成功的照片，什么都不删
-        case deleted(Int)         // 原图已删除
-        case declined             // 用户在系统弹窗里点了"不允许"
-        case failed(String)       // 删除时出错
-        case copiesKept           // 原图没删，用户选择保留副本
-        case copiesDeleted        // 原图没删，用户选择删除副本，且已删除
+    /// 原图没删成时（用户点了"不允许"或出错），等用户决定怎么处理刚生成的副本
+    struct PendingDecision {
+        let reason: String
+        let originalIDs: [String]
+        let copyIDs: [String]
     }
 
+    @State private var started = false
+    @State private var isWorking = true
     @State private var progress: Double = 0
     @State private var statusText = "准备中…"
-    @State private var results: [ConversionResult]?
-    @State private var deletion: DeletionOutcome?
+    @State private var results: [ConversionResult] = []
+    /// 已删除原图的照片（按原图 ID 记）
+    @State private var deletedOriginals: Set<String> = []
+    /// 用户选择删除了副本的照片（按原图 ID 记）
+    @State private var deletedCopies: Set<String> = []
+    @State private var pendingDecision: PendingDecision?
     @State private var copyDeletionError: String?
 
     var body: some View {
         Group {
-            if let results, let deletion {
-                resultList(results, deletion: deletion)
-            } else {
+            if isWorking {
                 VStack(spacing: 16) {
                     Spacer()
                     ProgressView(value: progress)
@@ -230,47 +231,70 @@ struct ProcessingView: View {
                     Spacer()
                 }
                 .padding()
+            } else {
+                resultList
             }
         }
-        .navigationTitle(results == nil ? "正在处理" : "处理结果")
+        .navigationTitle(isWorking ? "正在处理" : "处理结果")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarBackButtonHidden(true)
         .task {
-            guard results == nil else { return }
-            // 处理时不让屏幕自动锁定，否则 App 进入后台会中断处理
-            UIApplication.shared.isIdleTimerDisabled = true
-            let finished = await LivePhotoConverter.convert(identifiers: identifiers) { value, text in
-                Task { @MainActor in
-                    progress = value
-                    statusText = text
-                }
-            }
-            statusText = "正在删除原实况照片…"
-            let outcome = await deleteOriginals(of: finished)
-            UIApplication.shared.isIdleTimerDisabled = false
-            deletion = outcome
-            results = finished
+            guard !started else { return }
+            started = true
+            await run(identifiers)
         }
     }
 
-    /// 全部转换完后，一次性删除转换成功的原图（新照片都已确认写入相册）
-    private func deleteOriginals(of results: [ConversionResult]) async -> DeletionOutcome {
-        let ids = results.filter(\.succeeded).map(\.originalID)
-        guard !ids.isEmpty else { return .nothingToDelete }
-        do {
-            try await LivePhotoConverter.deleteAssets(identifiers: ids)
-            return .deleted(ids.count)
-        } catch {
-            return LivePhotoConverter.isUserCancelled(error) ? .declined : .failed(error.localizedDescription)
+    /// 转换一批照片，然后一次性删除其中转换成功的原图。第一次处理和"重试"都走这里。
+    private func run(_ ids: [String]) async {
+        isWorking = true
+        progress = 0
+        statusText = "准备中…"
+        // 处理时不让屏幕自动锁定，否则 App 进入后台会中断处理
+        UIApplication.shared.isIdleTimerDisabled = true
+
+        let batch = await LivePhotoConverter.convert(identifiers: ids) { value, text in
+            Task { @MainActor in
+                progress = value
+                statusText = text
+            }
         }
+        // 重试的结果替换掉原来那条失败记录
+        for result in batch {
+            if let index = results.firstIndex(where: { $0.originalID == result.originalID }) {
+                results[index] = result
+            } else {
+                results.append(result)
+            }
+        }
+
+        // 只删除这一批里转换成功（新照片已确认写入相册）的原图
+        let succeeded = batch.filter(\.succeeded)
+        if !succeeded.isEmpty {
+            statusText = "正在删除原实况照片…"
+            let originalIDs = succeeded.map(\.originalID)
+            do {
+                try await LivePhotoConverter.deleteAssets(identifiers: originalIDs)
+                deletedOriginals.formUnion(originalIDs)
+            } catch {
+                let reason = LivePhotoConverter.isUserCancelled(error)
+                    ? "你在系统弹窗里没有允许删除。"
+                    : "删除原图时出错：\(error.localizedDescription)"
+                pendingDecision = PendingDecision(reason: reason, originalIDs: originalIDs, copyIDs: succeeded.compactMap(\.newID))
+            }
+        }
+
+        UIApplication.shared.isIdleTimerDisabled = false
+        isWorking = false
     }
 
     /// 原图没删时，用户选择删除刚生成的副本（同样会弹系统确认框）
-    private func deleteCopies(of results: [ConversionResult]) async {
+    private func deleteCopies(_ decision: PendingDecision) async {
         do {
-            try await LivePhotoConverter.deleteAssets(identifiers: results.compactMap(\.newID))
+            try await LivePhotoConverter.deleteAssets(identifiers: decision.copyIDs)
+            deletedCopies.formUnion(decision.originalIDs)
             copyDeletionError = nil
-            deletion = .copiesDeleted
+            pendingDecision = nil
         } catch {
             copyDeletionError = LivePhotoConverter.isUserCancelled(error)
                 ? "你没有允许删除，副本仍然保留着。"
@@ -278,72 +302,91 @@ struct ProcessingView: View {
         }
     }
 
-    /// 临时的结果汇总（完整的结果页在第 5 步做）
-    private func resultList(_ results: [ConversionResult], deletion: DeletionOutcome) -> some View {
+    private var resultList: some View {
         let succeeded = results.filter(\.succeeded)
         let failed = results.filter { !$0.succeeded }
-        let warned = succeeded.filter { !$0.warnings.isEmpty }
+        let warnings = succeeded.flatMap(\.warnings)
+        let deletedCount = succeeded.filter { deletedOriginals.contains($0.originalID) }.count
+        let undoneCount = succeeded.filter { deletedCopies.contains($0.originalID) }.count
+        let pendingCount = pendingDecision?.originalIDs.count ?? 0
+        let keptCount = succeeded.count - deletedCount - undoneCount - pendingCount
 
         return List {
             Section {
-                Text("成功生成 \(succeeded.count) 张静态照片")
+                Label("成功 \(succeeded.count) 张", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
                 if !failed.isEmpty {
-                    Text("失败 \(failed.count) 张")
+                    Label("失败 \(failed.count) 张", systemImage: "xmark.circle.fill")
                         .foregroundStyle(.red)
                 }
-                switch deletion {
-                case .nothingToDelete:
-                    Text("没有转换成功的照片，原图都没有删除")
-                case .deleted(let count):
-                    Text("已删除 \(count) 张原实况照片")
-                case .copiesKept:
-                    Text("已保留静态副本，原实况照片也还在")
-                case .copiesDeleted:
-                    Text("已删除刚生成的静态副本，原实况照片还在")
-                case .declined, .failed:
-                    EmptyView()
+                if deletedCount > 0 {
+                    Text("其中 \(deletedCount) 张原实况照片已删除")
+                }
+                if keptCount > 0 {
+                    Text("其中 \(keptCount) 张保留了静态副本，原实况照片也还在")
+                }
+                if undoneCount > 0 {
+                    Text("其中 \(undoneCount) 张已删除刚生成的副本，原实况照片还在")
                 }
             }
 
-            switch deletion {
-            case .declined, .failed:
+            if let pendingDecision {
                 Section("原图没有删除") {
-                    if case .failed(let message) = deletion {
-                        Text("删除原图时出错：\(message)")
-                            .foregroundStyle(.red)
-                    } else {
-                        Text("你在系统弹窗里没有允许删除。")
-                    }
-                    Text("静态副本已经生成，原实况照片仍在。请选择怎么处理刚生成的副本：")
+                    Text(pendingDecision.reason)
+                    Text("\(pendingDecision.originalIDs.count) 张静态副本已经生成，原实况照片仍在。请选择怎么处理刚生成的副本：")
                     Button("保留副本") {
-                        self.deletion = .copiesKept
+                        self.pendingDecision = nil
+                        copyDeletionError = nil
                     }
                     Button("删除刚生成的副本", role: .destructive) {
-                        Task { await deleteCopies(of: results) }
+                        Task { await deleteCopies(pendingDecision) }
                     }
                     if let copyDeletionError {
                         Text(copyDeletionError)
                             .foregroundStyle(.red)
                     }
                 }
-            default:
-                EmptyView()
+            }
+
+            if deletedCount > 0 {
+                Section {
+                    Label("原图已移到“最近删除”。去照片 App 的“相簿”页，在最下面找到“最近删除”并清空后，空间才会真正释放。", systemImage: "info.circle")
+                        .font(.subheadline)
+                }
             }
 
             if !failed.isEmpty {
-                Section("失败原因") {
-                    ForEach(failed) { Text($0.errorMessage ?? "未知错误") }
-                }
-            }
-            if !warned.isEmpty {
-                Section("需要注意") {
-                    ForEach(warned) { result in
-                        ForEach(result.warnings, id: \.self) { Text($0) }
+                Section {
+                    ForEach(failed) { result in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(result.label)
+                            Text(result.errorMessage ?? "未知错误")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                    Button("重试失败的 \(failed.count) 张") {
+                        Task { await run(failed.map(\.originalID)) }
+                    }
+                    .disabled(pendingDecision != nil)
+                } header: {
+                    Text("失败原因")
+                } footer: {
+                    if pendingDecision != nil {
+                        Text("请先处理上面的副本，再重试")
                     }
                 }
             }
+
+            if !warnings.isEmpty {
+                Section("需要注意") {
+                    ForEach(warnings, id: \.self) { Text($0) }
+                }
+            }
+
             Section {
-                Button("返回首页", action: onFinish)
+                Button("继续选择", action: onFinish)
+                    .frame(maxWidth: .infinity)
             }
         }
     }

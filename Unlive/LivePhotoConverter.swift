@@ -14,6 +14,8 @@ import Photos
 nonisolated struct ConversionResult: Identifiable, Sendable {
     let id = UUID()
     let originalID: String
+    /// 给用户看的照片描述（拍摄时间），方便在相册里找到它
+    var label: String
     /// 新生成的静态照片；nil 表示失败
     var newID: String?
     var errorMessage: String?
@@ -44,21 +46,23 @@ nonisolated enum LivePhotoConverter {
         let total = Double(identifiers.count)
 
         for (index, id) in identifiers.enumerated() {
-            let label = "正在处理第 \(index + 1) / \(identifiers.count) 张"
-            progress(Double(index) / total, label)
+            let stepText = "正在处理第 \(index + 1) / \(identifiers.count) 张"
+            progress(Double(index) / total, stepText)
 
             guard let asset = assetsByID[id] else {
-                results.append(ConversionResult(originalID: id, errorMessage: "相册里找不到这张照片"))
+                results.append(ConversionResult(originalID: id, label: "一张照片", errorMessage: "相册里找不到这张照片（可能已被删除）"))
                 continue
             }
 
+            let label = asset.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的照片" } ?? "一张照片"
+
             do {
                 let (newID, warnings) = try await convertOne(asset) { downloadFraction in
-                    progress((Double(index) + downloadFraction) / total, "\(label)（正在从 iCloud 下载 \(Int(downloadFraction * 100))%）")
+                    progress((Double(index) + downloadFraction) / total, "\(stepText)（正在从 iCloud 下载 \(Int(downloadFraction * 100))%）")
                 }
-                results.append(ConversionResult(originalID: id, newID: newID, warnings: warnings))
+                results.append(ConversionResult(originalID: id, label: label, newID: newID, warnings: warnings))
             } catch {
-                results.append(ConversionResult(originalID: id, errorMessage: error.localizedDescription))
+                results.append(ConversionResult(originalID: id, label: label, errorMessage: error.localizedDescription))
             }
         }
 
