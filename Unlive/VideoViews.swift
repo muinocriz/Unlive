@@ -240,3 +240,460 @@ struct VideoTestView: View {
         return total >= 60 ? "\(total / 60) 分 \(total % 60) 秒" : "\(total) 秒"
     }
 }
+
+// MARK: - 正式流程：确认页
+
+/// 确认页里的一个视频
+struct VideoItem: Identifiable {
+    let id: String
+    var asset: PHAsset?
+    var info: VideoInfo?
+    var needsDownload = false
+    var isEdited = false
+    /// 不能处理的原因（找不到、电影效果、共享相簿等）；nil 表示可以处理
+    var unsupportedReason: String?
+    var isLoaded = false
+
+    /// 在当前画质档下是否值得压缩。只在 iCloud 上、参数未知的，先当作值得压缩
+    func isCompressible(_ quality: VideoQuality) -> Bool {
+        guard isLoaded, unsupportedReason == nil else { return false }
+        guard let info else { return true }
+        return info.targetBitRate(quality) != nil
+    }
+}
+
+struct VideoConfirmView: View {
+    let identifiers: [String]
+    let onFinish: () -> Void
+
+    @State private var items: [VideoItem] = []
+    @State private var quality: VideoQuality = .high
+    /// 用户手动取消勾选的视频（其余值得压缩的默认勾选）
+    @State private var unchecked: Set<String> = []
+    @State private var showingEditedWarning = false
+    @State private var idsToProcess: [String] = []
+    @State private var showingProcessing = false
+
+    private var isLoading: Bool { items.contains { !$0.isLoaded } }
+    private var selected: [VideoItem] {
+        items.filter { $0.isCompressible(quality) && !unchecked.contains($0.id) }
+    }
+    private var savedBytes: Int64 {
+        selected.reduce(0) { total, item in
+            guard let info = item.info, let original = info.fileBytes, let estimate = info.estimatedBytes(quality) else { return total }
+            return total + max(original - estimate, 0)
+        }
+    }
+    private var estimatedSeconds: Double {
+        selected.reduce(0) { $0 + ($1.info?.estimatedSeconds ?? 0) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Picker("画质", selection: $quality) {
+                    ForEach(VideoQuality.allCases) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text(quality == .high ? "画质几乎看不出变化，空间节省得少一些。" : "空间节省得更多，放大看细节会略有损失。")
+            }
+
+            Section {
+                ForEach(items) { item in
+                    VideoRow(
+                        item: item,
+                        quality: quality,
+                        isChecked: item.isCompressible(quality) && !unchecked.contains(item.id)
+                    ) {
+                        if unchecked.contains(item.id) {
+                            unchecked.remove(item.id)
+                        } else {
+                            unchecked.insert(item.id)
+                        }
+                    }
+                }
+            }
+        }
+        .safeAreaInset(edge: .bottom) { bottomBar }
+        .navigationTitle("已选 \(identifiers.count) 个视频")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            guard items.isEmpty else { return }
+            await loadItems()
+        }
+        // 有编辑过的视频时先提醒：处理后无法复原编辑。选"跳过"的就当没选过。
+        .confirmationDialog("有 \(editedSelected.count) 个视频编辑过", isPresented: $showingEditedWarning, titleVisibility: .visible) {
+            Button("全部处理") {
+                start(selected.map(\.id))
+            }
+            if editedSelected.count < selected.count {
+                Button("跳过编辑过的视频") {
+                    start(selected.filter { !$0.isEdited }.map(\.id))
+                }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("这些视频会按编辑后的样子压缩，删除原视频后将无法再“复原”编辑。")
+        }
+        .navigationDestination(isPresented: $showingProcessing) {
+            VideoProcessingView(identifiers: idsToProcess, quality: quality, onFinish: onFinish)
+        }
+    }
+
+    private var editedSelected: [VideoItem] { selected.filter(\.isEdited) }
+
+    private var bottomBar: some View {
+        VStack(spacing: 8) {
+            if isLoading {
+                ProgressView("正在读取视频信息…")
+            } else {
+                Text("共 \(selected.count) 个，约可节省 \(VideoFormat.bytes(savedBytes))，预计耗时约 \(VideoFormat.duration(estimatedSeconds))")
+                    .font(.subheadline)
+                if estimatedSeconds > 600 {
+                    Label("预计超过 10 分钟，建议接上电源", systemImage: "bolt.fill")
+                        .font(.footnote)
+                        .foregroundStyle(.orange)
+                }
+                if selected.contains(where: \.needsDownload) {
+                    Text("“需下载”的视频要先从 iCloud 下载原片，实际节省空间和耗时以压缩时为准。")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+            }
+            Button {
+                if editedSelected.isEmpty {
+                    start(selected.map(\.id))
+                } else {
+                    showingEditedWarning = true
+                }
+            } label: {
+                Text("开始压缩（\(selected.count)）")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(isLoading || selected.isEmpty)
+        }
+        .padding()
+        .background(.bar)
+    }
+
+    private func start(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        idsToProcess = ids
+        showingProcessing = true
+    }
+
+    /// 逐个读取参数（不下载），读完一个显示一个
+    private func loadItems() async {
+        items = identifiers.map { VideoItem(id: $0) }
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var assetsByID: [String: PHAsset] = [:]
+        fetched.enumerateObjects { asset, _, _ in assetsByID[asset.localIdentifier] = asset }
+
+        for index in items.indices {
+            var item = items[index]
+            if let asset = assetsByID[item.id] {
+                item.asset = asset
+                item.isEdited = VideoCompressor.isEdited(asset)
+                item.unsupportedReason = VideoCompressor.unsupportedReason(asset)
+                if item.unsupportedReason == nil {
+                    let (info, needsDownload) = await VideoCompressor.quickInspect(asset)
+                    item.info = info
+                    item.needsDownload = needsDownload
+                }
+            } else {
+                item.unsupportedReason = "相册里找不到这个视频（可能已被删除）"
+            }
+            item.isLoaded = true
+            items[index] = item
+        }
+    }
+}
+
+/// 确认页的一行：缩略图、时长、标签、大小变化、勾选框
+struct VideoRow: View {
+    let item: VideoItem
+    let quality: VideoQuality
+    let isChecked: Bool
+    let onToggle: () -> Void
+
+    @State private var thumbnail: UIImage?
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(spacing: 12) {
+                ZStack(alignment: .bottomTrailing) {
+                    Rectangle()
+                        .fill(.quaternary)
+                        .overlay {
+                            if let thumbnail {
+                                Image(uiImage: thumbnail)
+                                    .resizable()
+                                    .scaledToFill()
+                            }
+                        }
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                    if let asset = item.asset {
+                        Text(VideoFormat.clock(asset.duration))
+                            .font(.caption2.bold())
+                            .foregroundStyle(.white)
+                            .shadow(radius: 2)
+                            .padding(3)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.subheadline)
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(item.unsupportedReason == nil ? Color.secondary : Color.red)
+                }
+                Spacer()
+
+                if item.isLoaded && item.isCompressible(quality) {
+                    Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                        .font(.title2)
+                        .foregroundStyle(isChecked ? Color.accentColor : Color.secondary)
+                } else if !item.isLoaded {
+                    ProgressView()
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(!item.isCompressible(quality))
+        .task(id: item.asset?.localIdentifier) {
+            guard let asset = item.asset, thumbnail == nil else { return }
+            thumbnail = await Self.loadThumbnail(asset)
+        }
+    }
+
+    /// 第一行：规格 · 建议
+    private var title: String {
+        guard item.isLoaded else { return "正在读取…" }
+        guard item.unsupportedReason == nil else { return "无法处理" }
+        var parts: [String] = []
+        if let info = item.info { parts.append(info.label) }
+        if item.needsDownload { parts.append("需下载") }
+        if item.isEdited { parts.append("编辑过") }
+        parts.append(item.isCompressible(quality) ? "建议压缩" : "无需压缩")
+        return parts.joined(separator: " · ")
+    }
+
+    /// 第二行：大小变化，或不能处理的原因
+    private var detail: String {
+        if let reason = item.unsupportedReason { return reason }
+        guard let info = item.info, let original = info.fileBytes else {
+            return item.isLoaded ? "大小未知，压缩时再计算" : ""
+        }
+        if let estimate = info.estimatedBytes(quality) {
+            return "\(VideoFormat.bytes(original)) → 约 \(VideoFormat.bytes(estimate))"
+        }
+        return "\(VideoFormat.bytes(original))，码率已经很低"
+    }
+
+    private static func loadThumbnail(_ asset: PHAsset) async -> UIImage? {
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.resizeMode = .fast
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { continuation in
+            PHImageManager.default().requestImage(
+                for: asset,
+                targetSize: CGSize(width: 192, height: 192),
+                contentMode: .aspectFill,
+                options: options
+            ) { image, _ in
+                continuation.resume(returning: image)
+            }
+        }
+    }
+}
+
+// MARK: - 正式流程：压缩页 / 结果页
+
+/// 一个视频的处理结果
+struct VideoJobResult: Identifiable {
+    let id: String
+    let label: String
+    var result: VideoCompressionResult?
+    var errorMessage: String?
+    var succeeded: Bool { result != nil }
+}
+
+/// 阶段 2：逐个压缩并保存为新视频，原视频暂不删除（删除在阶段 3 加入）
+struct VideoProcessingView: View {
+    let identifiers: [String]
+    let quality: VideoQuality
+    let onFinish: () -> Void
+
+    @State private var started = false
+    @State private var isWorking = true
+    @State private var progress: Double = 0
+    @State private var statusText = "准备中…"
+    @State private var results: [VideoJobResult] = []
+
+    var body: some View {
+        Group {
+            if isWorking {
+                VStack(spacing: 16) {
+                    Spacer()
+                    ProgressView(value: progress)
+                    Text(statusText)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                    Text("压缩过程中请不要离开 App")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .padding()
+            } else {
+                resultList
+            }
+        }
+        .navigationTitle(isWorking ? "正在压缩" : "压缩结果")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(true)
+        .task {
+            guard !started else { return }
+            started = true
+            await run()
+        }
+    }
+
+    private func run() async {
+        // 压缩时不让屏幕自动锁定，否则 App 进入后台会中断压缩
+        UIApplication.shared.isIdleTimerDisabled = true
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        var assetsByID: [String: PHAsset] = [:]
+        fetched.enumerateObjects { asset, _, _ in assetsByID[asset.localIdentifier] = asset }
+        let total = Double(identifiers.count)
+
+        for (index, id) in identifiers.enumerated() {
+            let step = "第 \(index + 1) / \(identifiers.count) 个"
+            progress = Double(index) / total
+            statusText = step
+
+            guard let asset = assetsByID[id] else {
+                results.append(VideoJobResult(id: id, label: "一个视频", errorMessage: "相册里找不到这个视频（可能已被删除）"))
+                continue
+            }
+            let label = asset.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的视频" } ?? "一个视频"
+            do {
+                let result = try await VideoCompressor.compressAndSave(asset, quality: quality) { value, text in
+                    Task { @MainActor in
+                        progress = (Double(index) + value) / total
+                        statusText = "\(step)：\(text)"
+                    }
+                }
+                results.append(VideoJobResult(id: id, label: label, result: result))
+            } catch {
+                results.append(VideoJobResult(id: id, label: label, errorMessage: error.localizedDescription))
+            }
+        }
+
+        UIApplication.shared.isIdleTimerDisabled = false
+        isWorking = false
+    }
+
+    private var resultList: some View {
+        let succeeded = results.filter(\.succeeded)
+        let failed = results.filter { !$0.succeeded }
+        let saved = succeeded.reduce(Int64(0)) { total, job in
+            guard let r = job.result, let original = r.originalBytes else { return total }
+            return total + max(original - r.newBytes, 0)
+        }
+        let warnings = succeeded.flatMap { $0.result?.warnings ?? [] }
+
+        return List {
+            Section {
+                Label("成功 \(succeeded.count) 个", systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                if !failed.isEmpty {
+                    Label("失败 \(failed.count) 个", systemImage: "xmark.circle.fill")
+                        .foregroundStyle(.red)
+                }
+                if !succeeded.isEmpty {
+                    Text("删除原视频后可节省 \(VideoFormat.bytes(saved))")
+                }
+            } footer: {
+                Text("当前为测试阶段：新视频已保存，原视频还没有删除。")
+            }
+
+            if !succeeded.isEmpty {
+                Section("已压缩") {
+                    ForEach(succeeded) { job in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(job.label)
+                            if let r = job.result {
+                                Text("\(r.originalBytes.map(VideoFormat.bytes) ?? "未知") → \(VideoFormat.bytes(r.newBytes))，用时 \(VideoFormat.duration(r.seconds))")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !failed.isEmpty {
+                Section("失败原因") {
+                    ForEach(failed) { job in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(job.label)
+                            Text(job.errorMessage ?? "未知错误")
+                                .font(.footnote)
+                                .foregroundStyle(.red)
+                        }
+                    }
+                }
+            }
+
+            if !warnings.isEmpty {
+                Section("需要注意") {
+                    ForEach(warnings, id: \.self) { Text($0) }
+                }
+            }
+
+            Section {
+                Button("继续选择", action: onFinish)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+}
+
+// MARK: - 共用
+
+/// 视频选择器：只显示视频，排除电影效果、慢动作、空间视频（压缩会丢失它们的特殊信息）
+let videoPickerFilter: PHPickerFilter = {
+    var excluded: [PHPickerFilter] = [.cinematicVideos, .slomoVideos]
+    if #available(iOS 18.0, *) {
+        excluded.append(.spatialMedia)
+    }
+    return .all(of: [.videos, .not(.any(of: excluded))])
+}()
+
+/// 大小、时长的显示格式
+nonisolated enum VideoFormat {
+    static func bytes(_ bytes: Int64) -> String {
+        let mb = Double(bytes) / 1_000_000
+        return mb >= 1000 ? String(format: "%.2f GB", mb / 1000) : String(format: "%.0f MB", mb)
+    }
+
+    static func duration(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return total >= 60 ? "\(total / 60) 分 \(total % 60) 秒" : "\(total) 秒"
+    }
+
+    /// 缩略图上的时长，如 0:17、12:05
+    static func clock(_ seconds: Double) -> String {
+        let total = Int(seconds.rounded())
+        return String(format: "%d:%02d", total / 60, total % 60)
+    }
+}

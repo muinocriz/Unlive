@@ -36,6 +36,9 @@ nonisolated struct VideoInfo: Sendable {
     let isHDR: Bool
     /// 原视频文件大小；系统没给时为 nil
     let fileBytes: Int64?
+    /// 视频只在 iCloud 上、没下载时为 true：码率按"文件大小 ÷ 时长"估算，帧率按 60fps 算（偏保守），
+    /// 真正压缩时会下载原片，再按实际参数重新计算
+    var isApproximate = false
 
     /// 按短边只分 4K / 1080p
     var is4K: Bool { min(width, height) > 1080 }
@@ -43,7 +46,8 @@ nonisolated struct VideoInfo: Sendable {
     var is60fps: Bool { frameRate >= 45 }
 
     var label: String {
-        "\(is4K ? "4K" : "1080p") · \(is60fps ? 60 : 30)fps" + (isHDR ? " · HDR" : "")
+        if isApproximate { return is4K ? "4K" : "1080p" }
+        return "\(is4K ? "4K" : "1080p") · \(is60fps ? 60 : 30)fps" + (isHDR ? " · HDR" : "")
     }
 
     /// 码率表里的档位值（bit/s）
@@ -113,6 +117,55 @@ nonisolated enum VideoCompressor {
         try checkSupported(asset)
         let source = try await loadAVAsset(for: asset, downloadProgress: downloadProgress)
         return try await readInfo(source, asset: asset)
+    }
+
+    /// 确认页用：不下载，快速读取参数。
+    /// 返回 info 为 nil 表示只在 iCloud 上、连文件大小也拿不到，只能等压缩时再看。
+    static func quickInspect(_ asset: PHAsset) async -> (info: VideoInfo?, needsDownload: Bool) {
+        let options = PHVideoRequestOptions()
+        options.version = .current
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = false
+
+        let local: AVURLAsset? = await withCheckedContinuation { continuation in
+            PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, _ in
+                continuation.resume(returning: avAsset as? AVURLAsset)
+            }
+        }
+        if let local, let info = try? await readInfo(local, asset: asset) {
+            return (info, false)
+        }
+
+        // 只在 iCloud 上：用文件大小估算
+        guard let bytes = fileBytes(of: asset), asset.duration > 0 else { return (nil, true) }
+        let assumedAudio = 192_000.0
+        let info = VideoInfo(
+            width: asset.pixelWidth,
+            height: asset.pixelHeight,
+            duration: asset.duration,
+            frameRate: 60,
+            videoBitRate: max(Double(bytes) * 8 / asset.duration - assumedAudio, 0),
+            audioBitRate: assumedAudio,
+            isHDR: false,
+            fileBytes: bytes,
+            isApproximate: true
+        )
+        return (info, true)
+    }
+
+    /// 不能处理的视频返回原因，能处理返回 nil
+    static func unsupportedReason(_ asset: PHAsset) -> String? {
+        do {
+            try checkSupported(asset)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    /// 是不是编辑过（剪辑、调色等）。这类视频会按编辑后的样子压缩，删除原片后无法再"复原"编辑。
+    static func isEdited(_ asset: PHAsset) -> Bool {
+        PHAssetResource.assetResources(for: asset).contains { $0.type == .fullSizeVideo || $0.type == .adjustmentData }
     }
 
     // MARK: - 压缩并保存（不删原片）
@@ -222,11 +275,6 @@ nonisolated enum VideoCompressor {
             audioRate += Double(try await track.load(.estimatedDataRate))
         }
 
-        // 系统没有公开的"文件大小"接口，这里读取资源自带的 fileSize 属性，只用于展示
-        let resources = PHAssetResource.assetResources(for: asset)
-        let videoResource = resources.first(where: { $0.type == .fullSizeVideo }) ?? resources.first(where: { $0.type == .video })
-        let fileBytes = videoResource?.value(forKey: "fileSize") as? Int64
-
         return VideoInfo(
             width: Int(naturalSize.width.rounded()),
             height: Int(naturalSize.height.rounded()),
@@ -235,8 +283,15 @@ nonisolated enum VideoCompressor {
             videoBitRate: Double(dataRate),
             audioBitRate: audioRate,
             isHDR: color.isHDR,
-            fileBytes: fileBytes
+            fileBytes: fileBytes(of: asset)
         )
+    }
+
+    /// 视频文件大小。系统没有公开的"文件大小"接口，这里读取资源自带的 fileSize 属性，只用于展示和估算
+    private static func fileBytes(of asset: PHAsset) -> Int64? {
+        let resources = PHAssetResource.assetResources(for: asset)
+        let videoResource = resources.first(where: { $0.type == .fullSizeVideo }) ?? resources.first(where: { $0.type == .video })
+        return videoResource?.value(forKey: "fileSize") as? Int64
     }
 
     /// 原视频的色彩信息（HDR 视频是 BT.2020 + HLG）。缺失时按普通 SDR（BT.709）处理。

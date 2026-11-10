@@ -14,6 +14,9 @@ struct ContentView: View {
     @State private var showingPicker = false
     @State private var showingConfirm = false
     @State private var permissionMessage: String?
+    @State private var videoItems: [PhotosPickerItem] = []
+    @State private var showingVideoPicker = false
+    @State private var showingVideoConfirm = false
 
     var body: some View {
         NavigationStack {
@@ -24,7 +27,7 @@ struct ContentView: View {
                     .foregroundStyle(.tint)
                 Text("定格")
                     .font(.largeTitle.bold())
-                Text(selectedItems.isEmpty ? "把实况照片变成静态照片，节省空间" : "已选 \(selectedItems.count) 张实况照片")
+                Text(selectedItems.isEmpty ? "为相册腾出空间" : "已选 \(selectedItems.count) 张实况照片")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -40,10 +43,30 @@ struct ContentView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    // 视频压缩的临时入口（阶段 1 测试用），阶段 2 改成正式的双入口
+                    // 第二个入口：压缩视频。选完直接进确认页
+                    Button {
+                        showingVideoPicker = true
+                    } label: {
+                        Text("选择视频")
+                            .font(.headline)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 6)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    // 只显示视频（排除电影效果、慢动作、空间视频），最多 30 个
+                    .photosPicker(
+                        isPresented: $showingVideoPicker,
+                        selection: $videoItems,
+                        maxSelectionCount: 30,
+                        matching: videoPickerFilter,
+                        photoLibrary: .shared()
+                    )
+
+                    // 阶段 1 的单个视频测试页，暂时保留，方便对比画质
                     NavigationLink("压缩视频（测试版）") {
                         VideoTestView()
                     }
+                    .font(.footnote)
                 } else {
                     Button {
                         Task { await checkPermissionThenContinue() }
@@ -78,6 +101,20 @@ struct ContentView: View {
                     selectedItems = []
                 }
             }
+            .onChange(of: videoItems) {
+                guard !videoItems.isEmpty else { return }
+                Task { await checkVideoPermission() }
+            }
+            .navigationDestination(isPresented: $showingVideoConfirm) {
+                VideoConfirmView(identifiers: videoItems.compactMap(\.itemIdentifier)) {
+                    // 结果页点"继续选择"：回到首页
+                    showingVideoConfirm = false
+                }
+            }
+            // 从确认页返回首页时清空选择，下次重新选
+            .onChange(of: showingVideoConfirm) {
+                if !showingVideoConfirm { videoItems = [] }
+            }
             .alert(
                 "需要相册的完全访问权限",
                 isPresented: Binding(
@@ -111,6 +148,25 @@ struct ContentView: View {
             permissionMessage = "你只允许了访问部分照片。定格需要访问全部照片，才能找到选中的原图、生成静态照片并删除原图。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
         default:
             permissionMessage = "定格需要访问你的相册，才能生成静态照片并删除原图。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
+        }
+    }
+
+    /// 选完视频后检查权限；拿到完全访问权限才进入视频确认页
+    private func checkVideoPermission() async {
+        var status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        if status == .notDetermined {
+            status = await PHPhotoLibrary.requestAuthorization(for: .readWrite)
+        }
+
+        switch status {
+        case .authorized:
+            showingVideoConfirm = true
+        case .limited:
+            videoItems = []
+            permissionMessage = "你只允许了访问部分照片。压缩视频需要访问全部照片，才能找到原视频、保存压缩后的新视频并删除原视频。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
+        default:
+            videoItems = []
+            permissionMessage = "压缩视频需要访问你的相册。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
         }
     }
 }
