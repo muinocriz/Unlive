@@ -6,6 +6,8 @@
 
 <p align="center">为 iPhone 相册腾出空间</p>
 
+<p align="center"><a href="https://muinocriz.github.io/Unlive/">🌐 项目主页（动画演示）/ Website</a></p>
+
 <p align="center">
   <img src="docs/screenshots/home-in-iPhone17.JPG" width="280" alt="定格首页">
 </p>

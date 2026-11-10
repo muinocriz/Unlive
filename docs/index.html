@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="zh-CN" data-lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>定格 Unlive — 为 iPhone 相册腾出空间</title>
+<meta name="description" content="定格（Unlive）：把实况照片无损转成静态照片、在不改分辨率和帧率的前提下压缩视频，一次选择，自动完成，信息不丢。">
+<link rel="icon" href="screenshots/icon_light.png">
+<style>
+  :root {
+    --bg: #f6f8fb;
+    --bg-elev: #ffffff;
+    --text: #0b1220;
+    --text-2: #4b5565;
+    --text-3: #8a94a6;
+    --line: #e3e8ef;
+    --accent: #0a84ff;
+    --accent-soft: #e5f1ff;
+    --good: #22a559;
+    --bad: #e5484d;
+    --warn: #f5a524;
+    --shadow: 0 10px 30px rgba(15, 30, 60, .08), 0 2px 6px rgba(15, 30, 60, .05);
+    --radius: 20px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b0d12;
+      --bg-elev: #151922;
+      --text: #f2f5fa;
+      --text-2: #b4bccb;
+      --text-3: #7c8698;
+      --line: #252b37;
+      --accent: #3d9bff;
+      --accent-soft: #11253f;
+      --good: #3ccf7a;
+      --bad: #ff6b6f;
+      --warn: #ffb547;
+      --shadow: 0 10px 30px rgba(0, 0, 0, .35);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  img { max-width: 100%; display: block; }
+
+  /* 双语：只显示当前语言 */
+  html[data-lang="zh"] .en, html[data-lang="en"] .zh { display: none !important; }
+
+  .wrap { width: min(1080px, 100% - 32px); margin: 0 auto; }
+
+  /* 顶栏 */
+  .topbar {
+    position: sticky; top: 0; z-index: 10;
+    backdrop-filter: saturate(180%) blur(16px);
+    -webkit-backdrop-filter: saturate(180%) blur(16px);
+    background: color-mix(in srgb, var(--bg) 78%, transparent);
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar .wrap { display: flex; align-items: center; justify-content: space-between; height: 56px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 700; color: var(--text); }
+  .brand img { width: 28px; height: 28px; border-radius: 7px; }
+  .lang-switch {
+    display: inline-flex; border: 1px solid var(--line); border-radius: 999px; padding: 3px; background: var(--bg-elev);
+  }
+  .lang-switch button {
+    border: 0; background: transparent; color: var(--text-2); font: inherit; font-size: 13px;
+    padding: 4px 12px; border-radius: 999px; cursor: pointer;
+  }
+  .lang-switch button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+
+  /* 首屏 */
+  .hero { padding: 72px 0 40px; text-align: center; }
+  .hero .icon { width: 96px; height: 96px; margin: 0 auto 20px; border-radius: 22px; box-shadow: var(--shadow); background: #fff; }
+  .hero h1 { font-size: clamp(36px, 7vw, 60px); line-height: 1.1; margin: 0 0 14px; letter-spacing: -.02em; }
+  .hero .sub { font-size: clamp(17px, 2.4vw, 21px); color: var(--text-2); margin: 0 auto 28px; max-width: 640px; }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 12px 22px; border-radius: 999px; font-weight: 600;
+    background: var(--accent); color: #fff; border: 1px solid var(--accent);
+  }
+  .btn.ghost { background: transparent; color: var(--accent); }
+  /* 首页截图是白底 JPG：放在浅色展台上，深色模式下也不会露出白边 */
+  .stage {
+    margin: 48px auto 0; width: min(420px, 100%); padding: 36px 0; border-radius: 32px; overflow: hidden;
+    background: linear-gradient(180deg, #ffffff 0%, #ffffff 100%);
+    box-shadow: var(--shadow);
+  }
+  .hero .phone { width: min(300px, 72%); margin: 0 auto; }
+  .pills { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 22px; }
+  .pill { font-size: 13px; color: var(--text-2); background: var(--bg-elev); border: 1px solid var(--line); padding: 4px 12px; border-radius: 999px; }
+
+  /* 通用分节 */
+  section.block { padding: 72px 0; }
+  .eyebrow { color: var(--accent); font-weight: 700; font-size: 14px; letter-spacing: .06em; text-transform: uppercase; margin: 0 0 8px; }
+  h2 { font-size: clamp(28px, 4.4vw, 40px); line-height: 1.2; margin: 0 0 14px; letter-spacing: -.01em; }
+  .lead { color: var(--text-2); font-size: 18px; max-width: 640px; margin: 0 0 36px; }
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: center; }
+  @media (max-width: 820px) { .split { grid-template-columns: 1fr; } }
+  .card { background: var(--bg-elev); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }
+  .points { list-style: none; padding: 0; margin: 0; display: grid; gap: 14px; }
+  .points li { display: flex; gap: 12px; align-items: flex-start; color: var(--text-2); }
+  .points b { color: var(--text); }
+  .dot { flex: 0 0 22px; height: 22px; border-radius: 50%; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-size: 13px; font-weight: 700; margin-top: 2px; }
+  .replay {
+    margin-top: 18px; border: 1px solid var(--line); background: var(--bg-elev); color: var(--text-2);
+    font: inherit; font-size: 13px; padding: 6px 14px; border-radius: 999px; cursor: pointer;
+  }
+  .replay:hover { color: var(--accent); border-color: var(--accent); }
+  .note { font-size: 12px; color: var(--text-3); margin-top: 10px; }
+
+  /* ===== 演示 1：实况照片 → 静态照片 ===== */
+  .live-stage { padding: 32px 24px 28px; display: grid; justify-items: center; gap: 22px; }
+  .photo-wrap { position: relative; width: 240px; height: 300px; }
+  .scene {
+    position: absolute; inset: 0; border-radius: 18px; overflow: hidden;
+    background: linear-gradient(180deg, #8ec5ff 0%, #c9e4ff 55%, #f7d9b5 100%);
+  }
+  .scene .sun { position: absolute; width: 54px; height: 54px; border-radius: 50%; background: #fff3c4; top: 46px; right: 44px; box-shadow: 0 0 40px #ffe9a0; }
+  .scene .m1 { position: absolute; left: -20px; right: 30%; bottom: 70px; height: 150px; background: #5b8fd6; clip-path: polygon(0 100%, 45% 10%, 100% 100%); }
+  .scene .m2 { position: absolute; left: 30%; right: -30px; bottom: 70px; height: 120px; background: #4677c2; clip-path: polygon(0 100%, 55% 0, 100% 100%); }
+  .scene .ground { position: absolute; left: 0; right: 0; bottom: 0; height: 80px; background: linear-gradient(180deg, #6fbf73, #4fa25a); }
+  .scene .tree { position: absolute; bottom: 60px; width: 34px; height: 70px; background: #2f7d43; clip-path: polygon(50% 0, 100% 80%, 60% 80%, 60% 100%, 40% 100%, 40% 80%, 0 80%); }
+  /* 视频的"帧"：叠在照片后面，实况时轻微晃动 */
+  .frame {
+    position: absolute; inset: 0; border-radius: 18px; overflow: hidden; opacity: .9;
+    box-shadow: 0 6px 16px rgba(0, 0, 0, .12);
+    transition: transform 1s cubic-bezier(.2, .7, .2, 1), opacity 1s ease;
+  }
+  .frame .scene { filter: saturate(.85) brightness(.97); }
+  .f1 { transform: translate(14px, 10px) rotate(3deg); }
+  .f2 { transform: translate(26px, 20px) rotate(6deg); opacity: .75; }
+  .f3 { transform: translate(38px, 30px) rotate(9deg); opacity: .6; }
+  .main-photo { position: absolute; inset: 0; border-radius: 18px; overflow: hidden; box-shadow: 0 14px 30px rgba(10, 30, 70, .25); }
+  .live-badge {
+    position: absolute; top: 12px; left: 12px; z-index: 3;
+    display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 7px; border-radius: 999px;
+    background: rgba(255, 255, 255, .85); color: #111; font-size: 12px; font-weight: 600;
+    transition: all .5s ease;
+  }
+  .live-badge .ring { width: 16px; height: 16px; border-radius: 50%; border: 1.5px dotted #111; display: grid; place-items: center; position: relative; }
+  .live-badge .ring::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #111; }
+  .live-badge .slash { position: absolute; width: 20px; height: 1.5px; background: #111; transform: rotate(-45deg) scaleX(0); transition: transform .4s ease .2s; }
+  .scanline {
+    position: absolute; left: 0; right: 0; height: 3px; top: 0; z-index: 4; opacity: 0;
+    background: linear-gradient(90deg, transparent, #fff, transparent); box-shadow: 0 0 18px 4px rgba(255, 255, 255, .8);
+  }
+  .exif-chip {
+    position: absolute; bottom: -14px; left: 50%; transform: translate(-50%, 10px); opacity: 0; z-index: 5; white-space: nowrap;
+    background: var(--good); color: #fff; font-size: 12px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+    transition: all .5s ease;
+  }
+  /* 状态：实况播放中 */
+  .live-demo.is-live .main-photo { animation: breathe 1.6s ease-in-out infinite; }
+  .live-demo.is-live .f1 { animation: jitter1 .9s steps(3) infinite; }
+  .live-demo.is-live .f2 { animation: jitter2 1.1s steps(3) infinite; }
+  .live-demo.is-live .f3 { animation: jitter3 1.3s steps(3) infinite; }
+  @keyframes breathe { 50% { transform: scale(1.015); } }
+  @keyframes jitter1 { 0% { transform: translate(14px, 10px) rotate(3deg); } 50% { transform: translate(16px, 8px) rotate(2deg); } }
+  @keyframes jitter2 { 0% { transform: translate(26px, 20px) rotate(6deg); } 50% { transform: translate(24px, 22px) rotate(7deg); } }
+  @keyframes jitter3 { 0% { transform: translate(38px, 30px) rotate(9deg); } 50% { transform: translate(40px, 28px) rotate(8deg); } }
+  /* 状态：扫描原始静态图 */
+  .live-demo.is-scan .scanline { animation: scan 1.1s ease-in-out forwards; }
+  @keyframes scan { 0% { top: 0; opacity: 1; } 100% { top: 100%; opacity: 1; } }
+  /* 状态：视频部分被剥离 */
+  .live-demo.is-strip .f1 { transform: translate(220px, -40px) rotate(24deg); opacity: 0; }
+  .live-demo.is-strip .f2 { transform: translate(260px, 10px) rotate(32deg); opacity: 0; transition-delay: .12s; }
+  .live-demo.is-strip .f3 { transform: translate(300px, 60px) rotate(40deg); opacity: 0; transition-delay: .24s; }
+  .live-demo.is-strip .live-badge .slash { transform: rotate(-45deg) scaleX(1); }
+  .live-demo.is-done .exif-chip { opacity: 1; transform: translate(-50%, 0); }
+  .live-badge .t-still { display: none; }
+  .live-demo.is-strip .live-badge .t-live { display: none; }
+  .live-demo.is-strip .live-badge .t-still { display: inline; }
+
+  .storage { width: 100%; max-width: 360px; }
+  .storage .row { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-2); margin-bottom: 6px; }
+  .bar { height: 14px; border-radius: 999px; background: var(--line); overflow: hidden; display: flex; }
+  .bar .seg-photo { background: var(--accent); width: 43%; transition: width 1s ease; }
+  .bar .seg-video { background: var(--warn); width: 57%; transition: width 1s ease; }
+  .live-demo.is-strip .bar .seg-video { width: 0; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-3); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+  .status { min-height: 1.6em; font-size: 14px; color: var(--text-2); text-align: center; }
+
+  /* ===== 演示 2：视频压缩 ===== */
+  .video-stage { padding: 28px 24px; display: grid; gap: 20px; }
+  .player { position: relative; border-radius: 14px; overflow: hidden; aspect-ratio: 16 / 9; background: #0d1626; }
+  .reel { position: absolute; inset: 0; display: flex; width: 300%; animation: reel 6s linear infinite; }
+  .reel .shot { flex: 1; position: relative; }
+  .reel .shot:nth-child(3n+1) { background: linear-gradient(180deg, #7fb7ff, #d9ecff 60%, #9ad08d 60%); }
+  .reel .shot:nth-child(3n+2) { background: linear-gradient(180deg, #ffb58a, #ffe0c2 58%, #6c8fbf 58%); }
+  .reel .shot:nth-child(3n) { background: linear-gradient(180deg, #2b3d66, #6a5c9c 55%, #2b2f45 55%); }
+  .reel .shot::after { content: ""; position: absolute; width: 18%; aspect-ratio: 1; border-radius: 50%; background: rgba(255, 255, 255, .7); top: 16%; left: 60%; }
+  @keyframes reel { to { transform: translateX(-66.666%); } }
+  .player .tag {
+    position: absolute; top: 10px; left: 10px; font-size: 12px; font-weight: 700; color: #fff;
+    background: rgba(0, 0, 0, .45); padding: 3px 9px; border-radius: 6px; letter-spacing: .02em;
+  }
+  .player .time { position: absolute; bottom: 10px; right: 10px; font-size: 12px; font-weight: 700; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
+  .sizes { display: grid; gap: 10px; }
+  .size-row { display: grid; grid-template-columns: 74px 1fr 76px; align-items: center; gap: 10px; font-size: 13px; color: var(--text-2); }
+  .size-row .track { height: 16px; background: var(--line); border-radius: 999px; overflow: hidden; }
+  .size-row .fill { height: 100%; border-radius: 999px; width: 100%; }
+  .size-row.before .fill { background: var(--warn); }
+  .size-row.after .fill { background: var(--accent); width: 100%; transition: width 1.6s cubic-bezier(.3, .7, .2, 1); }
+  .video-demo.is-done .size-row.after .fill { width: 57%; }
+  .size-row .num { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+  .keeps { display: flex; flex-wrap: wrap; gap: 8px; }
+  .keep {
+    font-size: 12px; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-weight: 600;
+    opacity: 0; transform: translateY(6px) scale(.95); transition: all .35s ease;
+  }
+  .keep::before { content: "✓ "; }
+  .video-demo.is-done .keep { opacity: 1; transform: none; }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 28px; }
+  @media (max-width: 560px) { .stat-grid { grid-template-columns: 1fr; } }
+  .stat { padding: 18px; }
+  .stat .big { font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+  .stat .small { font-size: 13px; color: var(--text-2); }
+
+  /* ===== 演示 3：批量对比 ===== */
+  .vs { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 820px) { .vs { grid-template-columns: 1fr; } }
+  .lane { padding: 22px; }
+  .lane-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 14px; gap: 10px; }
+  .lane-head h3 { margin: 0; font-size: 18px; }
+  .counter { font-size: 13px; color: var(--text-2); white-space: nowrap; }
+  .counter b { font-size: 22px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; position: relative; }
+  .tile { aspect-ratio: 1; border-radius: 5px; position: relative; transition: transform .2s ease, opacity .4s ease, filter .4s ease; }
+  .tile.flash { transform: scale(.88); }
+  .tile .chk {
+    position: absolute; right: 3px; bottom: 3px; width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+    border: 1.5px solid #fff; transform: scale(0); transition: transform .2s ease; display: grid; place-items: center;
+  }
+  .tile .chk::after { content: ""; width: 5px; height: 3px; border-left: 1.5px solid #fff; border-bottom: 1.5px solid #fff; transform: rotate(-45deg) translate(0, -1px); }
+  .tile.on .chk { transform: scale(1); }
+  .tile.lost .chk { background: var(--bad); transform: scale(1.15); }
+  .tile .lv { position: absolute; left: 3px; top: 3px; width: 9px; height: 9px; border-radius: 50%; border: 1.3px dotted rgba(255, 255, 255, .95); }
+  .tile.still .lv { opacity: 0; }
+  .tile.still::after { content: ""; position: absolute; inset: 0; border-radius: 5px; box-shadow: inset 0 0 0 2.5px var(--good); }
+  .tile.gone { opacity: .12; filter: grayscale(1); }
+  .tile.copy { outline: 2px solid var(--good); outline-offset: -2px; }
+  .tile.hunting { outline: 2px dashed var(--warn); outline-offset: -2px; }
+  .steps { list-style: none; margin: 16px 0 0; padding: 0; display: grid; gap: 6px; }
+  .steps li { font-size: 13px; color: var(--text-3); display: flex; gap: 8px; align-items: center; transition: color .3s ease; }
+  .steps li::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid currentColor; flex: 0 0 8px;
+  }
+  .steps li.now { color: var(--text); font-weight: 600; }
+  .steps li.now::before { background: var(--accent); border-color: var(--accent); }
+  .steps li.done { color: var(--text-2); }
+  .steps li.done::before { background: var(--good); border-color: var(--good); }
+  .steps li.bad { color: var(--bad); }
+  .steps li.bad::before { background: var(--bad); border-color: var(--bad); }
+  .finish { margin-top: 12px; font-size: 14px; font-weight: 700; min-height: 1.6em; }
+  .finish.ok { color: var(--good); }
+  .finish.slow { color: var(--warn); }
+
+  /* ===== 信息不丢 ===== */
+  .meta-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 820px) { .meta-grid { grid-template-columns: repeat(2, 1fr); } }
+  .meta {
+    padding: 16px; display: flex; gap: 12px; align-items: center;
+    opacity: 0; transform: translateY(14px); transition: opacity .5s ease, transform .5s ease;
+  }
+  .meta-grid.in .meta { opacity: 1; transform: none; }
+  .meta .ico { width: 36px; height: 36px; border-radius: 10px; background: var(--accent-soft); display: grid; place-items: center; font-size: 18px; flex: 0 0 36px; }
+  .meta .t { font-weight: 600; font-size: 15px; }
+  .meta .d { font-size: 12px; color: var(--text-3); }
+
+  /* ===== 安全 ===== */
+  .safe-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 820px) { .safe-grid { grid-template-columns: 1fr; } }
+  .safe { padding: 22px; }
+  .safe h3 { margin: 10px 0 6px; font-size: 17px; }
+  .safe p { margin: 0; color: var(--text-2); font-size: 14px; }
+  .safe .num { font-size: 13px; font-weight: 800; color: var(--accent); }
+
+  /* ===== 真实界面 ===== */
+  .shots { display: grid; gap: 28px; }
+  .shots figure { margin: 0; }
+  .shots img { border-radius: 16px; border: 1px solid var(--line); box-shadow: var(--shadow); background: #fff; }
+  .shots figcaption { text-align: center; color: var(--text-2); font-size: 14px; margin-top: 10px; }
+
+  /* 进场动画 */
+  .reveal { opacity: 0; transform: translateY(24px); transition: opacity .7s ease, transform .7s ease; }
+  .reveal.in { opacity: 1; transform: none; }
+
+  footer { padding: 56px 0 64px; text-align: center; color: var(--text-3); font-size: 14px; border-top: 1px solid var(--line); }
+  footer .cta { margin-bottom: 22px; }
+
+  /* 不喜欢动效的用户：直接显示最终状态 */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation: none !important; transition: none !important; }
+    .reveal, .meta { opacity: 1 !important; transform: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap">
+    <a class="brand" href="#top"><img src="screenshots/icon_light.png" alt=""><span class="zh">定格</span><span class="en">Unlive</span></a>
+    <div class="lang-switch" role="group" aria-label="语言 / Language">
+      <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
+      <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+    </div>
+  </div>
+</header>
+
+<main id="top">
+  <!-- 首屏 -->
+  <section class="hero wrap">
+    <img class="icon" src="screenshots/icon_light.png" alt="定格 App 图标">
+    <h1><span class="zh">定格</span><span class="en">Unlive</span></h1>
+    <p class="sub">
+      <span class="zh">为 iPhone 相册腾出空间。实况照片去掉视频、视频降低码率——选一次，自动完成，信息一点不丢。</span>
+      <span class="en">Free up space in your iPhone photo library. Strip the video from Live Photos and shrink videos — pick once, done automatically, nothing lost.</span>
+    </p>
+    <div class="cta">
+      <a class="btn" href="https://github.com/muinocriz/Unlive"><span class="zh">在 GitHub 上查看</span><span class="en">View on GitHub</span></a>
+      <a class="btn ghost" href="#live"><span class="zh">看看怎么做到的</span><span class="en">See how it works</span></a>
+    </div>
+    <div class="pills">
+      <span class="pill"><span class="zh">只用苹果系统框架</span><span class="en">Apple frameworks only</span></span>
+      <span class="pill"><span class="zh">不联网、不收集数据</span><span class="en">Offline, no data collected</span></span>
+      <span class="pill"><span class="zh">开源 · MIT</span><span class="en">Open source · MIT</span></span>
+    </div>
+    <div class="stage reveal"><img class="phone" src="screenshots/home-in-iPhone17.JPG" alt="定格首页 / Unlive home screen"></div>
+  </section>
+
+  <!-- 演示 1：实况照片 -->
+  <section class="block" id="live">
+    <div class="wrap split">
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">实况照片 → 静态照片</span><span class="en">Live Photo → Still</span></p>
+        <h2><span class="zh">留下照片，<br>去掉那 3 秒视频</span><span class="en">Keep the photo,<br>drop the 3-second video</span></h2>
+        <p class="lead">
+          <span class="zh">每张实况照片背后都藏着一段视频，往往比照片本身还大。定格直接复制原始静态图的文件数据——不解码、不重新压缩，画质和 EXIF 原封不动。</span>
+          <span class="en">Every Live Photo hides a short video that's often bigger than the photo itself. Unlive copies the original still image's bytes as-is — no decoding, no re-compression, so quality and EXIF stay untouched.</span>
+        </p>
+        <ul class="points">
+          <li><span class="dot">1</span><span><b class="zh">原样复制</b><b class="en">Byte-for-byte copy</b> <span class="zh">— 新照片和原图的静态部分大小基本一致</span><span class="en">— the new photo matches the original still in size</span></span></li>
+          <li><span class="dot">2</span><span><b class="zh">时间线位置不变</b><b class="en">Same place in your timeline</b> <span class="zh">— 不会跑到"最新"</span><span class="en">— it won't jump to "most recent"</span></span></li>
+          <li><span class="dot">3</span><span><b class="zh">编辑过的也行</b><b class="en">Edited photos too</b> <span class="zh">— 按你看到的样子生成，处理前会提醒</span><span class="en">— saved as you see them, with a heads-up first</span></span></li>
+        </ul>
+      </div>
+      <div class="card live-demo reveal" id="liveDemo">
+        <div class="live-stage">
+          <div class="photo-wrap">
+            <div class="frame f3"><div class="scene"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="ground"></div></div></div>
+            <div class="frame f2"><div class="scene"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="ground"></div></div></div>
+            <div class="frame f1"><div class="scene"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="ground"></div></div></div>
+            <div class="main-photo">
+              <div class="scene"><div class="sun"></div><div class="m1"></div><div class="m2"></div><div class="ground"></div><div class="tree" style="left:40px"></div><div class="tree" style="left:78px;transform:scale(.8)"></div></div>
+              <div class="scanline"></div>
+            </div>
+            <span class="live-badge"><span class="ring"><span class="slash"></span></span><span class="badge-text t-live"><span class="zh">实况</span><span class="en">LIVE</span></span><span class="badge-text t-still"><span class="zh">静态</span><span class="en">STILL</span></span></span>
+            <span class="exif-chip"><span class="zh">EXIF · 拍摄时间 · 位置 已保留</span><span class="en">EXIF · date · location kept</span></span>
+          </div>
+          <div class="status" id="liveStatus"></div>
+          <div class="storage">
+            <div class="row"><span><span class="zh">占用空间</span><span class="en">Storage used</span></span><span id="liveSize">5.6 MB</span></div>
+            <div class="bar"><div class="seg-photo"></div><div class="seg-video"></div></div>
+            <div class="legend">
+              <span><i style="background:var(--accent)"></i><span class="zh">静态照片</span><span class="en">Still photo</span></span>
+              <span><i style="background:var(--warn)"></i><span class="zh">视频部分</span><span class="en">Video part</span></span>
+            </div>
+          </div>
+          <button class="replay" data-replay="live"><span class="zh">↻ 再看一次</span><span class="en">↻ Replay</span></button>
+        </div>
+      </div>
+    </div>
+    <p class="wrap note"><span class="zh">* 动画中的大小为示意。实测：8 张实况照片约释放 42.6 MB。</span><span class="en">* Sizes in the animation are illustrative. Measured: 8 Live Photos freed about 42.6 MB.</span></p>
+  </section>
+
+  <!-- 演示 2：视频压缩 -->
+  <section class="block" id="video" style="background:var(--bg-elev);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+    <div class="wrap split">
+      <div class="card video-demo reveal" id="videoDemo" style="background:var(--bg)">
+        <div class="video-stage">
+          <div class="player">
+            <div class="reel"><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div><div class="shot"></div></div>
+            <span class="tag">4K · 60fps · HDR</span>
+            <span class="time">0:25</span>
+          </div>
+          <div class="sizes">
+            <div class="size-row before"><span><span class="zh">原视频</span><span class="en">Original</span></span><div class="track"><div class="fill"></div></div><span class="num">167 MB</span></div>
+            <div class="size-row after"><span><span class="zh">压缩后</span><span class="en">Compressed</span></span><div class="track"><div class="fill"></div></div><span class="num" id="videoSize">167 MB</span></div>
+          </div>
+          <div class="keeps">
+            <span class="keep" style="transition-delay:.2s"><span class="zh">分辨率</span><span class="en">Resolution</span></span>
+            <span class="keep" style="transition-delay:.35s"><span class="zh">帧率</span><span class="en">Frame rate</span></span>
+            <span class="keep" style="transition-delay:.5s">HDR</span>
+            <span class="keep" style="transition-delay:.65s"><span class="zh">声音原样</span><span class="en">Audio untouched</span></span>
+            <span class="keep" style="transition-delay:.8s"><span class="zh">拍摄时间</span><span class="en">Capture date</span></span>
+            <span class="keep" style="transition-delay:.95s"><span class="zh">位置</span><span class="en">Location</span></span>
+            <span class="keep" style="transition-delay:1.1s"><span class="zh">镜头信息</span><span class="en">Lens info</span></span>
+            <span class="keep" style="transition-delay:1.25s"><span class="zh">音频混合</span><span class="en">Audio Mix</span></span>
+          </div>
+          <button class="replay" data-replay="video" style="justify-self:start"><span class="zh">↻ 再看一次</span><span class="en">↻ Replay</span></button>
+        </div>
+      </div>
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">压缩视频</span><span class="en">Video compression</span></p>
+        <h2><span class="zh">看起来一样，<br>体积约减半</span><span class="en">Looks the same,<br>about half the size</span></h2>
+        <p class="lead">
+          <span class="zh">iPhone 拍的 4K60 视频码率很高，一分钟约 440 MB。定格用手机的硬件 HEVC（10bit）重新编码，只降低码率：分辨率、帧率、每一帧的时间都不变。</span>
+          <span class="en">iPhone 4K60 video runs at a very high bitrate — about 440 MB a minute. Unlive re-encodes it with the phone's hardware HEVC (10-bit) encoder and only lowers the bitrate: resolution, frame rate and every frame's timing stay the same.</span>
+        </p>
+        <ul class="points">
+          <li><span class="dot">⇅</span><span><b class="zh">两档可选</b><b class="en">Two presets</b> <span class="zh">— 高画质 / 省空间；码率本来就不高的会标"无需压缩"</span><span class="en">— High Quality / Save Space; already-lean videos are marked "no need"</span></span></li>
+          <li><span class="dot">✓</span><span><b class="zh">先验证后删除</b><b class="en">Verified before deleting</b> <span class="zh">— 新视频能正常读取、时长一致，才删原视频</span><span class="en">— the original goes only after the new file plays and matches in length</span></span></li>
+          <li><span class="dot">↗</span><span><b class="zh">可以切到后台</b><b class="en">Keeps going in the background</b> <span class="zh">— iOS 26 起，系统在灵动岛显示进度</span><span class="en">— on iOS 26+, progress shows in the Dynamic Island</span></span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="wrap stat-grid">
+      <div class="card stat reveal"><div class="big">440 → ~225</div><div class="small"><span class="zh">MB / 分钟（4K60，高画质档）</span><span class="en">MB per minute (4K60, High Quality)</span></div></div>
+      <div class="card stat reveal"><div class="big">120 MB</div><div class="small"><span class="zh">实测：5 段 4K 视频省下的空间</span><span class="en">Measured: saved on 5 short 4K clips</span></div></div>
+      <div class="card stat reveal"><div class="big"><span class="zh">肉眼无差</span><span class="en">No visible loss</span></div><div class="small"><span class="zh">手机全屏对比、暂停放大都看不出差别</span><span class="en">Side by side, full screen and zoomed in on the phone</span></div></div>
+    </div>
+  </section>
+
+  <!-- 演示 3：批量对比 -->
+  <section class="block" id="batch">
+    <div class="wrap">
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">批量处理</span><span class="en">Batch processing</span></p>
+        <h2><span class="zh">选一次，就够了</span><span class="en">Pick once. That's it.</span></h2>
+        <p class="lead">
+          <span class="zh">系统相册的"复制为静态照片"复制完后，选择就消失了——你得回到相册，把散落在各处的原图一张张重新找出来删掉。定格把整件事一次做完。</span>
+          <span class="en">Photos' "Duplicate as Still Photo" clears your selection afterwards — so you have to hunt down each scattered original again to delete it. Unlive does the whole thing in one go.</span>
+        </p>
+      </div>
+      <div class="vs reveal" id="batchDemo">
+        <div class="card lane" id="laneSys">
+          <div class="lane-head">
+            <h3><span class="zh">系统相册</span><span class="en">Photos app</span></h3>
+            <span class="counter"><span class="zh">点击</span><span class="en">Taps</span> <b data-count>0</b></span>
+          </div>
+          <div class="grid" data-grid></div>
+          <ol class="steps">
+            <li><span class="zh">选中 6 张实况照片</span><span class="en">Select 6 Live Photos</span></li>
+            <li><span class="zh">复制为静态照片</span><span class="en">Duplicate as Still Photo</span></li>
+            <li><span class="zh">选择状态消失了</span><span class="en">Selection is gone</span></li>
+            <li><span class="zh">回到相册，一张张找回原图</span><span class="en">Hunt down each original again</span></li>
+            <li><span class="zh">删除原图</span><span class="en">Delete the originals</span></li>
+          </ol>
+          <div class="finish" data-finish></div>
+        </div>
+        <div class="card lane" id="laneApp">
+          <div class="lane-head">
+            <h3><span class="zh">定格</span><span class="en">Unlive</span></h3>
+            <span class="counter"><span class="zh">点击</span><span class="en">Taps</span> <b data-count>0</b></span>
+          </div>
+          <div class="grid" data-grid></div>
+          <ol class="steps">
+            <li><span class="zh">滑动选中 6 张</span><span class="en">Swipe to select 6</span></li>
+            <li><span class="zh">点"开始处理"，自动生成静态照片</span><span class="en">Tap Start — stills are created</span></li>
+            <li><span class="zh">系统确认一次，删除全部原图</span><span class="en">Confirm once — all originals deleted</span></li>
+          </ol>
+          <div class="finish" data-finish></div>
+        </div>
+      </div>
+      <div class="reveal" style="text-align:center"><button class="replay" data-replay="batch"><span class="zh">↻ 再看一次</span><span class="en">↻ Replay</span></button></div>
+    </div>
+  </section>
+
+  <!-- 信息不丢 -->
+  <section class="block" id="meta" style="background:var(--bg-elev);border-top:1px solid var(--line);border-bottom:1px solid var(--line)">
+    <div class="wrap">
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">信息不丢</span><span class="en">Nothing lost</span></p>
+        <h2><span class="zh">新文件，还是原来的样子</span><span class="en">A new file that's still the same memory</span></h2>
+        <p class="lead"><span class="zh">照片库里的信息和文件里的信息都会带过去，新文件出现在图库里原来的位置。</span><span class="en">Both library-level and file-level details carry over, and the new file sits right where the original was in your library.</span></p>
+      </div>
+      <div class="meta-grid" id="metaGrid">
+        <div class="card meta" style="transition-delay:.0s"><span class="ico">🕒</span><div><div class="t"><span class="zh">拍摄时间</span><span class="en">Capture date</span></div><div class="d"><span class="zh">含时区</span><span class="en">with time zone</span></div></div></div>
+        <div class="card meta" style="transition-delay:.08s"><span class="ico">📍</span><div><div class="t"><span class="zh">位置</span><span class="en">Location</span></div><div class="d">GPS</div></div></div>
+        <div class="card meta" style="transition-delay:.16s"><span class="ico">📷</span><div><div class="t"><span class="zh">机型和镜头</span><span class="en">Camera & lens</span></div><div class="d"><span class="zh">焦距、光圈</span><span class="en">focal length, aperture</span></div></div></div>
+        <div class="card meta" style="transition-delay:.24s"><span class="ico">♥</span><div><div class="t"><span class="zh">个人收藏</span><span class="en">Favorites</span></div><div class="d"><span class="zh">收藏状态</span><span class="en">favorite flag</span></div></div></div>
+        <div class="card meta" style="transition-delay:.32s"><span class="ico">🗂</span><div><div class="t"><span class="zh">所在相簿</span><span class="en">Albums</span></div><div class="d"><span class="zh">全部加回去</span><span class="en">added back to all</span></div></div></div>
+        <div class="card meta" style="transition-delay:.40s"><span class="ico">🙈</span><div><div class="t"><span class="zh">隐藏状态</span><span class="en">Hidden</span></div><div class="d"><span class="zh">隐藏的仍然隐藏</span><span class="en">stays hidden</span></div></div></div>
+        <div class="card meta" style="transition-delay:.48s"><span class="ico">✨</span><div><div class="t">HDR</div><div class="d"><span class="zh">画面不发灰</span><span class="en">no washed-out look</span></div></div></div>
+        <div class="card meta" style="transition-delay:.56s"><span class="ico">🎚</span><div><div class="t"><span class="zh">音频混合</span><span class="en">Audio Mix</span></div><div class="d"><span class="zh">视频仍可调整</span><span class="en">still adjustable</span></div></div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 安全 -->
+  <section class="block" id="safe">
+    <div class="wrap">
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">放心</span><span class="en">Safe by design</span></p>
+        <h2><span class="zh">删除之前，先把关</span><span class="en">Checked before anything is deleted</span></h2>
+      </div>
+      <div class="safe-grid">
+        <div class="card safe reveal"><span class="num">01</span><h3><span class="zh">先生成、后删除</span><span class="en">Create first, delete after</span></h3><p><span class="zh">新文件确认写进相册后，才删除对应的原件；失败的一律不动。</span><span class="en">An original is deleted only after its replacement is confirmed in your library. Failures are left untouched.</span></p></div>
+        <div class="card safe reveal"><span class="num">02</span><h3><span class="zh">系统只问一次</span><span class="en">One confirmation</span></h3><p><span class="zh">所有删除放在一次操作里，系统只弹一次确认框。误点了"不允许"？结果页还能再删一次。</span><span class="en">All deletions happen in one step, so iOS asks just once. Tapped "Don't Allow" by mistake? You can try again from the results page.</span></p></div>
+        <div class="card safe reveal"><span class="num">03</span><h3><span class="zh">30 天后悔期</span><span class="en">30 days to change your mind</span></h3><p><span class="zh">原件先进"最近删除"，30 天内都能恢复。App 中途被关掉，下次打开也会提醒你。</span><span class="en">Originals go to Recently Deleted and can be restored for 30 days. If the app is closed mid-way, it reminds you next time.</span></p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 真实界面 -->
+  <section class="block" id="screens" style="background:var(--bg-elev);border-top:1px solid var(--line)">
+    <div class="wrap">
+      <div class="reveal">
+        <p class="eyebrow"><span class="zh">真实界面</span><span class="en">The real thing</span></p>
+        <h2><span class="zh">就这么几步</span><span class="en">Just a few steps</span></h2>
+      </div>
+      <div class="shots">
+        <figure class="reveal">
+          <img src="screenshots/livephoto-unlive.JPG" loading="lazy" alt="实况照片：首页 → 选择 → 确认 → 结果 / Live Photos: home → pick → confirm → result">
+          <figcaption><span class="zh">实况照片：首页 → 选择实况照片 → 确认可释放空间 → 处理结果</span><span class="en">Live Photos: home → pick → see how much you'll free → results</span></figcaption>
+        </figure>
+        <figure class="reveal">
+          <img src="screenshots/video-compress.JPG" loading="lazy" alt="压缩视频：选择 → 确认页 → 正在压缩 → 结果 / Video: pick → confirm → compressing → results">
+          <figcaption><span class="zh">压缩视频：选择视频 → 确认页（选画质、看能省多少）→ 正在压缩（可切到后台）→ 压缩结果</span><span class="en">Video: pick → confirm (choose quality, see savings) → compressing (works in background) → results</span></figcaption>
+        </figure>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="cta">
+      <a class="btn" href="https://github.com/muinocriz/Unlive"><span class="zh">在 GitHub 上查看</span><span class="en">View on GitHub</span></a>
+      <a class="btn ghost" href="https://github.com/muinocriz/Unlive#安装"><span class="zh">安装方法</span><span class="en">How to install</span></a>
+    </div>
+    <p>
+      <span class="zh">需要 iOS 17 或更高版本 · 目前需用 Xcode 自行编译安装 · 界面为简体中文</span>
+      <span class="en">Requires iOS 17 or later · Build and install with Xcode for now · App UI is in Simplified Chinese</span>
+    </p>
+    <p>MIT License</p>
+  </div>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  /* ---------- 语言切换 ---------- */
+  var titles = {
+    zh: "定格 Unlive — 为 iPhone 相册腾出空间",
+    en: "Unlive — Free up space in your iPhone photo library"
+  };
+  function setLang(lang) {
+    document.documentElement.setAttribute("data-lang", lang);
+    document.documentElement.setAttribute("lang", lang === "zh" ? "zh-CN" : "en");
+    document.title = titles[lang];
+    document.querySelectorAll("[data-set-lang]").forEach(function (b) {
+      b.setAttribute("aria-pressed", String(b.getAttribute("data-set-lang") === lang));
+    });
+    try { localStorage.setItem("unlive-lang", lang); } catch (e) {}
+    // 动画里的文字跟着切换
+    if (liveText.current) setLiveStatus(liveText.current);
+    batch.refreshFinish();
+  }
+  function initialLang() {
+    try {
+      var saved = localStorage.getItem("unlive-lang");
+      if (saved === "zh" || saved === "en") return saved;
+    } catch (e) {}
+    var nav = (navigator.language || "zh").toLowerCase();
+    return nav.indexOf("zh") === 0 ? "zh" : "en";
+  }
+  function lang() { return document.documentElement.getAttribute("data-lang"); }
+
+  /* ---------- 小工具 ---------- */
+  function wait(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+  // 每次重播生成新的"场次"，旧的动画看到场次变了就停下
+  function Runner() { this.run = 0; }
+  Runner.prototype.next = function () { this.run += 1; return this.run; };
+  Runner.prototype.alive = function (id) { return this.run === id; };
+
+  function countTo(el, from, to, ms, suffix) {
+    var start = performance.now();
+    function tick(now) {
+      var p = Math.min((now - start) / ms, 1);
+      var eased = 1 - Math.pow(1 - p, 3);
+      el.textContent = (from + (to - from) * eased).toFixed(to % 1 ? 1 : 0) + suffix;
+      if (p < 1) requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  /* ---------- 演示 1：实况照片 ---------- */
+  var liveDemo = document.getElementById("liveDemo");
+  var liveStatus = document.getElementById("liveStatus");
+  var liveSize = document.getElementById("liveSize");
+  var liveRunner = new Runner();
+  var liveText = { current: null };
+  var LIVE_TEXT = {
+    playing: { zh: "实况照片：照片 + 一段 3 秒视频", en: "Live Photo: a photo + a 3-second video" },
+    scan: { zh: "读取原始静态图的文件数据…", en: "Reading the original still image bytes…" },
+    strip: { zh: "生成静态照片，删除原实况照片", en: "Saving the still, removing the Live Photo" },
+    done: { zh: "完成：画质无损，省下视频那部分空间", en: "Done: lossless, the video's space is freed" }
+  };
+  function setLiveStatus(key) { liveText.current = key; liveStatus.textContent = LIVE_TEXT[key][lang()]; }
+  async function playLive() {
+    var id = liveRunner.next();
+    liveDemo.className = "card live-demo reveal in is-live";
+    liveSize.textContent = "5.6 MB";
+    setLiveStatus("playing");
+    if (reduceMotion) { liveDemo.classList.add("is-strip", "is-done"); liveSize.textContent = "2.4 MB"; setLiveStatus("done"); return; }
+    await wait(2600); if (!liveRunner.alive(id)) return;
+    liveDemo.classList.add("is-scan"); setLiveStatus("scan");
+    await wait(1300); if (!liveRunner.alive(id)) return;
+    liveDemo.classList.remove("is-live"); liveDemo.classList.add("is-strip"); setLiveStatus("strip");
+    countTo(liveSize, 5.6, 2.4, 1000, " MB");
+    await wait(1300); if (!liveRunner.alive(id)) return;
+    liveDemo.classList.add("is-done"); setLiveStatus("done");
+  }
+
+  /* ---------- 演示 2：视频压缩 ---------- */
+  var videoDemo = document.getElementById("videoDemo");
+  var videoSize = document.getElementById("videoSize");
+  var videoRunner = new Runner();
+  async function playVideo() {
+    var id = videoRunner.next();
+    videoDemo.classList.remove("is-done");
+    videoSize.textContent = "167 MB";
+    if (reduceMotion) { videoDemo.classList.add("is-done"); videoSize.textContent = "95 MB"; return; }
+    await wait(900); if (!videoRunner.alive(id)) return;
+    videoDemo.classList.add("is-done");
+    countTo(videoSize, 167, 95, 1600, " MB");
+  }
+
+  /* ---------- 演示 3：批量对比 ---------- */
+  var COLORS = ["#ffb3ba", "#ffd59e", "#fff1a8", "#b8f0c2", "#a8e0ff", "#c3b8ff", "#ffc6e8", "#9fd8cb",
+                "#f4c7a1", "#b5c8ff", "#d7f0a0", "#ffcfb0"];
+  var TILE_COUNT = 24;
+  var TARGETS = [2, 7, 9, 14, 19, 22];       // 要处理的 6 张，分散在各处
+  var DECOYS = [3, 12, 17];                   // 找错的
+  var batch = (function () {
+    var runner = new Runner();
+    var lanes = {};
+    var finishKeys = {};
+    var FINISH = {
+      appDone: { zh: "✓ 完成，共点了 {n} 下", en: "✓ Done in {n} taps" },
+      sysWait: { zh: "还在找原图…", en: "Still hunting…" },
+      sysDone: { zh: "完成，共点了 {n} 下——前提是还记得是哪几张", en: "Done in {n} taps — if you remembered which ones" }
+    };
+    function build(laneEl) {
+      var grid = laneEl.querySelector("[data-grid]");
+      grid.innerHTML = "";
+      var tiles = [];
+      for (var i = 0; i < TILE_COUNT; i++) {
+        var t = document.createElement("div");
+        t.className = "tile";
+        t.style.background = COLORS[(i * 5) % COLORS.length];
+        t.innerHTML = '<span class="lv"></span><span class="chk"></span>';
+        grid.appendChild(t);
+        tiles.push(t);
+      }
+      laneEl.querySelectorAll(".steps li").forEach(function (li) { li.className = ""; });
+      laneEl.querySelector("[data-count]").textContent = "0";
+      var fin = laneEl.querySelector("[data-finish]");
+      fin.textContent = ""; fin.className = "finish";
+      return { el: laneEl, tiles: tiles, count: 0, steps: laneEl.querySelectorAll(".steps li"), fin: fin };
+    }
+    function tap(lane, n) {
+      lane.count += n || 1;
+      lane.el.querySelector("[data-count]").textContent = String(lane.count);
+    }
+    function step(lane, i, cls) {
+      lane.steps.forEach(function (li, j) {
+        if (j < i && !li.classList.contains("bad")) li.className = "done";
+      });
+      lane.steps[i].className = cls || "now";
+    }
+    function finish(laneName, key, cls) {
+      finishKeys[laneName] = { key: key, cls: cls };
+      var lane = lanes[laneName];
+      lane.fin.className = "finish " + cls;
+      lane.fin.textContent = finishText(key, lane);
+    }
+    function finishText(key, lane) { return FINISH[key][lang()].replace("{n}", String(lane.count)); }
+    function refreshFinish() {
+      Object.keys(finishKeys).forEach(function (name) {
+        var f = finishKeys[name];
+        if (lanes[name]) lanes[name].fin.textContent = finishText(f.key, lanes[name]);
+      });
+    }
+    async function flash(t) { t.classList.add("flash"); await wait(140); t.classList.remove("flash"); }
+
+    async function runApp(id) {
+      var L = lanes.app;
+      await wait(500); if (!runner.alive(id)) return;
+      step(L, 0);
+      for (var i = 0; i < TARGETS.length; i++) {          // 滑动多选：很快
+        L.tiles[TARGETS[i]].classList.add("on"); tap(L);
+        await wait(110); if (!runner.alive(id)) return;
+      }
+      await wait(600); if (!runner.alive(id)) return;
+      step(L, 1); tap(L);
+      for (var j = 0; j < TARGETS.length; j++) {
+        L.tiles[TARGETS[j]].classList.add("copy");
+        await wait(160); if (!runner.alive(id)) return;
+      }
+      await wait(500); if (!runner.alive(id)) return;
+      step(L, 2); tap(L);
+      await wait(400); if (!runner.alive(id)) return;
+      TARGETS.forEach(function (k) {
+        var t = L.tiles[k];
+        t.classList.remove("on", "copy"); t.classList.add("still");
+      });
+      L.steps[2].className = "done";
+      finish("app", "appDone", "ok");
+    }
+
+    async function runSys(id) {
+      var L = lanes.sys;
+      await wait(500); if (!runner.alive(id)) return;
+      step(L, 0);
+      for (var i = 0; i < TARGETS.length; i++) {          // 一张张点选
+        var t = L.tiles[TARGETS[i]];
+        await flash(t); t.classList.add("on"); tap(L);
+        await wait(260); if (!runner.alive(id)) return;
+      }
+      await wait(400); if (!runner.alive(id)) return;
+      step(L, 1); tap(L, 2);                               // 分享菜单 → 复制为静态照片
+      await wait(900); if (!runner.alive(id)) return;
+      step(L, 2, "bad");                                   // 选择消失
+      TARGETS.forEach(function (k) { L.tiles[k].classList.add("lost"); });
+      await wait(700); if (!runner.alive(id)) return;
+      TARGETS.forEach(function (k) { L.tiles[k].classList.remove("on", "lost"); });
+      await wait(500); if (!runner.alive(id)) return;
+      step(L, 3); finish("sys", "sysWait", "slow"); tap(L);  // 点"选择"
+      // 来回找：先找错几张，再一张张找对
+      var order = [DECOYS[0], TARGETS[0], TARGETS[1], DECOYS[1], TARGETS[2], TARGETS[3], DECOYS[2], TARGETS[4], TARGETS[5]];
+      for (var j = 0; j < order.length; j++) {
+        var k = order[j], tile = L.tiles[k];
+        tile.classList.add("hunting");
+        await wait(520); if (!runner.alive(id)) return;
+        tile.classList.remove("hunting");
+        await flash(tile); tile.classList.add("on"); tap(L);
+        if (DECOYS.indexOf(k) >= 0) {                       // 选错了，再点一下取消
+          await wait(320); if (!runner.alive(id)) return;
+          await flash(tile); tile.classList.remove("on"); tap(L);
+        }
+        await wait(200); if (!runner.alive(id)) return;
+      }
+      step(L, 4); tap(L, 2);
+      await wait(600); if (!runner.alive(id)) return;
+      TARGETS.forEach(function (k) { L.tiles[k].classList.remove("on"); L.tiles[k].classList.add("still"); });
+      L.steps[4].className = "done";
+      finish("sys", "sysDone", "slow");
+    }
+
+    function play() {
+      var id = runner.next();
+      finishKeys = {};
+      lanes.sys = build(document.getElementById("laneSys"));
+      lanes.app = build(document.getElementById("laneApp"));
+      if (reduceMotion) {
+        TARGETS.forEach(function (k) { lanes.sys.tiles[k].classList.add("still"); lanes.app.tiles[k].classList.add("still"); });
+        lanes.sys.count = 22; tap(lanes.sys); lanes.app.count = 7; tap(lanes.app);
+        lanes.sys.steps.forEach(function (li) { li.className = "done"; });
+        lanes.app.steps.forEach(function (li) { li.className = "done"; });
+        finish("sys", "sysDone", "slow"); finish("app", "appDone", "ok");
+        return;
+      }
+      runApp(id); runSys(id);
+    }
+    return { play: play, refreshFinish: refreshFinish };
+  })();
+
+  /* ---------- 滚动到才播放 ---------- */
+  var players = { live: playLive, video: playVideo, batch: batch.play };
+  var started = {};
+  var io = new IntersectionObserver(function (entries) {
+    entries.forEach(function (e) {
+      if (!e.isIntersecting) return;
+      e.target.classList.add("in");
+      var key = e.target.getAttribute("data-play");
+      if (key && !started[key]) { started[key] = true; players[key](); }
+      if (e.target.id === "metaGrid") e.target.classList.add("in");
+    });
+  }, { threshold: 0.15 });
+  document.querySelectorAll(".reveal").forEach(function (el) { io.observe(el); });
+  liveDemo.setAttribute("data-play", "live");
+  videoDemo.setAttribute("data-play", "video");
+  document.getElementById("batchDemo").setAttribute("data-play", "batch");
+  io.observe(document.getElementById("metaGrid"));
+
+  document.querySelectorAll("[data-replay]").forEach(function (b) {
+    b.addEventListener("click", function () { players[b.getAttribute("data-replay")](); });
+  });
+  document.querySelectorAll("[data-set-lang]").forEach(function (b) {
+    b.addEventListener("click", function () { setLang(b.getAttribute("data-set-lang")); });
+  });
+
+  setLang(initialLang());
+  // 首屏的实况演示一开始就准备好（静止在实况状态）
+  setLiveStatus("playing");
+})();
+</script>
+</body>
+</html>
