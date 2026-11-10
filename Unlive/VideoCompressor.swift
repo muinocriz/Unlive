@@ -589,7 +589,7 @@ nonisolated enum VideoCompressor {
             throw VideoError(message: "保存到相册后没有找到新视频")
         }
         guard abs(newAsset.duration - expectedDuration) <= 0.5 else {
-            throw VideoError(message: "相册里的新视频时长与原片不一致，原片不会删除")
+            throw VideoError(message: "相册里的新视频时长与原视频不一致，原视频不会删除。相册里已经多了一个压缩后的新视频（拍摄时间和原视频相同），请检查后手动删除；如果点重试，会再生成一个新的")
         }
         return (newID, warnings)
     }
