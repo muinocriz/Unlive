@@ -14,6 +14,8 @@ import Photos
 import AVFoundation
 import VideoToolbox
 import UniformTypeIdentifiers
+import BackgroundTasks
+import UIKit
 
 /// 两档画质，界面上不出现码率数字
 nonisolated enum VideoQuality: String, CaseIterable, Identifiable, Sendable {
@@ -105,6 +107,17 @@ nonisolated struct VideoError: LocalizedError {
     /// true 表示不是出错，而是这个视频不需要或不适合处理（结果页算"跳过"，不提供重试）
     var isSkipped = false
     var errorDescription: String? { message }
+
+    /// 用户取消了：这个视频没处理，原视频保留不动
+    static let cancelled = VideoError(message: "已取消，原视频保留不动", isSkipped: true)
+}
+
+/// 取消开关：用户点"取消"或系统叫停后台任务时打开，压缩过程中会随时检查
+nonisolated final class CancelFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    var isCancelled: Bool { lock.withLock { cancelled } }
+    func cancel() { lock.withLock { cancelled = true } }
 }
 
 nonisolated enum VideoCompressor {
@@ -176,14 +189,21 @@ nonisolated enum VideoCompressor {
     static func compressAndSave(
         _ asset: PHAsset,
         quality: VideoQuality,
+        cancel: CancelFlag? = nil,
         progress: @escaping @Sendable (Double, String) -> Void
     ) async throws -> VideoCompressionResult {
         let startTime = Date()
         try checkSupported(asset)
 
         progress(0, "正在读取视频…")
-        let source = try await loadAVAsset(for: asset) { fraction in
-            progress(0, "正在从 iCloud 下载 \(Int(fraction * 100))%")
+        let source: AVURLAsset
+        do {
+            source = try await loadAVAsset(for: asset, cancel: cancel) { fraction in
+                progress(0, "正在从 iCloud 下载 \(Int(fraction * 100))%")
+            }
+        } catch {
+            if cancel?.isCancelled == true { throw VideoError.cancelled }
+            throw error
         }
         let info = try await readInfo(source, asset: asset)
         guard let target = info.targetBitRate(quality) else {
@@ -196,9 +216,17 @@ nonisolated enum VideoCompressor {
         // 不管成功失败，临时文件都不留在手机上（成功时它会被移进相册）
         defer { try? FileManager.default.removeItem(at: outputURL) }
 
-        let compressWarnings = try await compress(source, info: info, targetBitRate: target, to: outputURL) { fraction in
-            progress(fraction * 0.95, "正在压缩 \(Int(fraction * 100))%")
+        let compressWarnings: [String]
+        do {
+            compressWarnings = try await compress(source, info: info, targetBitRate: target, to: outputURL, cancel: cancel) { fraction in
+                progress(fraction * 0.95, "正在压缩 \(Int(fraction * 100))%")
+            }
+        } catch {
+            if cancel?.isCancelled == true { throw VideoError.cancelled }
+            throw error
         }
+        // 压完了但还没保存时取消：不保存，原视频保留不动
+        if cancel?.isCancelled == true { throw VideoError.cancelled }
 
         progress(0.96, "正在检查压缩后的视频…")
         try await verifyFile(outputURL, expectedDuration: info.duration)
@@ -259,13 +287,18 @@ nonisolated enum VideoCompressor {
     /// 拿到能直接读取的视频文件。编辑过的视频拿到的是编辑后的样子（用户在相册里看到的）。
     private static func loadAVAsset(
         for asset: PHAsset,
+        cancel: CancelFlag? = nil,
         downloadProgress: @escaping @Sendable (Double) -> Void
     ) async throws -> AVURLAsset {
         let options = PHVideoRequestOptions()
         options.version = .current
         options.deliveryMode = .highQualityFormat
         options.isNetworkAccessAllowed = true
-        options.progressHandler = { fraction, _, _, _ in downloadProgress(fraction) }
+        options.progressHandler = { fraction, _, stop, _ in
+            // 用户取消时，停止从 iCloud 下载
+            if cancel?.isCancelled == true { stop.pointee = true }
+            downloadProgress(fraction)
+        }
 
         return try await withCheckedThrowingContinuation { continuation in
             PHImageManager.default().requestAVAsset(forVideo: asset, options: options) { avAsset, _, info in
@@ -337,6 +370,7 @@ nonisolated enum VideoCompressor {
         info: VideoInfo,
         targetBitRate: Double,
         to outputURL: URL,
+        cancel: CancelFlag? = nil,
         progress: @escaping @Sendable (Double) -> Void
     ) async throws -> [String] {
         guard let videoTrack = try await source.loadTracks(withMediaType: .video).first else {
@@ -461,13 +495,14 @@ nonisolated enum VideoCompressor {
         }
         writer.startSession(atSourceTime: .zero)
 
-        let copier = SampleCopier(pairs: pairs, duration: info.duration, progress: progress)
+        let copier = SampleCopier(pairs: pairs, duration: info.duration, cancel: cancel, progress: progress)
         let completed = await copier.run()
 
         if !completed || reader.status == .failed || writer.status == .failed {
             let error = writer.error ?? reader.error
             reader.cancelReading()
             writer.cancelWriting()
+            if cancel?.isCancelled == true { throw VideoError.cancelled }
             throw VideoError(message: "压缩失败（可能是手机存储空间不足）：\(error?.localizedDescription ?? "未知错误")")
         }
 
@@ -565,6 +600,7 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
     private let pairs: [(AVAssetReaderOutput, AVAssetWriterInput)]
     private let duration: Double
     private let progress: @Sendable (Double) -> Void
+    private let cancel: CancelFlag?
 
     // 下面这些状态会被不同的线程访问，用锁保护
     private let lock = NSLock()
@@ -574,7 +610,8 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
     /// 上次通知界面的进度；只在画面轨道的线程上读写
     private var lastReported: Double = -1
 
-    init(pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], duration: Double, progress: @escaping @Sendable (Double) -> Void) {
+    init(pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], duration: Double, cancel: CancelFlag?, progress: @escaping @Sendable (Double) -> Void) {
+        self.cancel = cancel
         self.pairs = pairs
         self.duration = duration
         self.progress = progress
@@ -596,6 +633,11 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
         let (output, input) = pairs[index]
         while input.isReadyForMoreMediaData {
             guard isActive(index) else { return }
+            // 用户取消：所有轨道一起停下
+            if cancel?.isCancelled == true {
+                abort()
+                return
+            }
             guard let sample = output.copyNextSampleBuffer() else {
                 input.markAsFinished()
                 complete(index)
@@ -650,4 +692,130 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
 nonisolated final class VideoBox<T>: @unchecked Sendable {
     var value: T?
     init(_ value: T? = nil) { self.value = value }
+}
+
+// MARK: - 中断恢复记录
+
+/// 记下"新视频已存好、原视频还没删"的视频。原视频删掉或用户做出选择后清掉。
+/// App 中途被系统关闭或闪退时，下次打开靠它提醒用户。
+nonisolated enum VideoPendingStore {
+    struct Entry: Codable, Sendable {
+        let originalID: String
+        let newID: String
+    }
+
+    private static let key = "videoPendingDeletions"
+
+    static func all() -> [Entry] {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return [] }
+        return (try? JSONDecoder().decode([Entry].self, from: data)) ?? []
+    }
+
+    static func add(originalID: String, newID: String) {
+        save(all() + [Entry(originalID: originalID, newID: newID)])
+    }
+
+    static func remove(originalIDs: [String]) {
+        let removing = Set(originalIDs)
+        save(all().filter { !removing.contains($0.originalID) })
+    }
+
+    private static func save(_ entries: [Entry]) {
+        if entries.isEmpty {
+            UserDefaults.standard.removeObject(forKey: key)
+        } else if let data = try? JSONEncoder().encode(entries) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// 处理上次没删完的原视频：只删除新视频还在的那些。返回删除了几个、几个因新视频找不到而没删。
+    /// 用户在系统弹窗里点"不允许"会抛出错误，记录保留，下次打开还会提醒。
+    static func deletePendingOriginals() async throws -> (deleted: Int, missingNew: Int) {
+        let entries = all()
+        let newIDs = entries.map(\.newID)
+        var existingNew: Set<String> = []
+        PHAsset.fetchAssets(withLocalIdentifiers: newIDs, options: nil).enumerateObjects { asset, _, _ in
+            existingNew.insert(asset.localIdentifier)
+        }
+        // 新视频已经找不到的：不删对应原视频，记录直接清掉
+        let missing = entries.filter { !existingNew.contains($0.newID) }
+        remove(originalIDs: missing.map(\.originalID))
+
+        let toDelete = entries.filter { existingNew.contains($0.newID) }.map(\.originalID)
+        var existingOriginals: [String] = []
+        PHAsset.fetchAssets(withLocalIdentifiers: toDelete, options: nil).enumerateObjects { asset, _, _ in
+            existingOriginals.append(asset.localIdentifier)
+        }
+        if !existingOriginals.isEmpty {
+            try await VideoCompressor.deleteAssets(identifiers: existingOriginals)
+        }
+        // 原视频已经不在了（比如用户自己删了）的，也一起清掉记录
+        remove(originalIDs: toDelete)
+        return (existingOriginals.count, missing.count)
+    }
+}
+
+// MARK: - 后台继续压缩（iOS 26 及以上）
+
+/// 用系统的"继续处理"任务，让 App 切到后台后还能接着压缩，系统会显示进度并允许用户取消。
+/// iOS 26 以下没有这个功能，什么也不做。
+final class VideoBackgroundRunner {
+    static var isSupported: Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    /// 系统叫停（用户在系统界面点了取消，或系统资源不够）时调用
+    var onExpire: (() -> Void)?
+    private var task: AnyObject?
+    private var isFinished = false
+    private var progress: Double = 0
+    private var subtitle = "准备中…"
+
+    /// 申请后台继续处理。失败时抛出错误，调用方要告诉用户只能停在 App 里。
+    func start() throws {
+        guard #available(iOS 26.0, *) else { return }
+        isFinished = false
+        let bundleID = Bundle.main.bundleIdentifier ?? "com.muinocriz.Unlive"
+        let identifier = "\(bundleID).compress.\(UUID().uuidString)"
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [weak self] task in
+            MainActor.assumeIsolated {
+                guard let task = task as? BGContinuedProcessingTask else { return }
+                guard let self, !self.isFinished else {
+                    task.setTaskCompleted(success: true)
+                    return
+                }
+                task.expirationHandler = { [weak self] in
+                    DispatchQueue.main.async { self?.onExpire?() }
+                }
+                task.progress.totalUnitCount = 1000
+                self.task = task
+                self.apply()
+            }
+        }
+        let request = BGContinuedProcessingTaskRequest(identifier: identifier, title: "正在压缩视频", subtitle: subtitle)
+        // 不能马上开始就直接失败，不排队
+        request.strategy = .fail
+        try BGTaskScheduler.shared.submit(request)
+    }
+
+    func update(progress: Double, subtitle: String) {
+        self.progress = progress
+        self.subtitle = subtitle
+        apply()
+    }
+
+    func finish(success: Bool) {
+        isFinished = true
+        guard #available(iOS 26.0, *), let task = task as? BGContinuedProcessingTask else { return }
+        task.progress.completedUnitCount = task.progress.totalUnitCount
+        task.setTaskCompleted(success: success)
+        self.task = nil
+    }
+
+    private func apply() {
+        guard #available(iOS 26.0, *), let task = task as? BGContinuedProcessingTask else { return }
+        task.progress.completedUnitCount = Int64(progress * 1000)
+        task.updateTitle("正在压缩视频", subtitle: subtitle)
+    }
 }

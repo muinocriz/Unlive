@@ -273,6 +273,7 @@ struct VideoConfirmView: View {
     @State private var showingEditedWarning = false
     @State private var idsToProcess: [String] = []
     @State private var showingProcessing = false
+    @State private var spaceMessage: String?
 
     private var isLoading: Bool { items.contains { !$0.isLoaded } }
     private var selected: [VideoItem] {
@@ -339,6 +340,17 @@ struct VideoConfirmView: View {
         .navigationDestination(isPresented: $showingProcessing) {
             VideoProcessingView(identifiers: idsToProcess, quality: quality, onFinish: onFinish)
         }
+        .alert(
+            "手机存储空间不足",
+            isPresented: Binding(
+                get: { spaceMessage != nil },
+                set: { if !$0 { spaceMessage = nil } }
+            )
+        ) {
+            Button("好", role: .cancel) {}
+        } message: {
+            Text(spaceMessage ?? "")
+        }
     }
 
     private var editedSelected: [VideoItem] { selected.filter(\.isEdited) }
@@ -387,8 +399,41 @@ struct VideoConfirmView: View {
 
     private func start(_ ids: [String]) {
         guard !ids.isEmpty else { return }
+        if let message = spaceShortage(for: ids) {
+            spaceMessage = message
+            return
+        }
         idsToProcess = ids
         showingProcessing = true
+    }
+
+    /// 开始前检查剩余空间。原视频要等全部压完才删除，所以压缩期间要放得下：
+    /// 所有新视频 + 要从 iCloud 下载的原视频 + 1GB 余量。放得下返回 nil，放不下返回给用户看的说明。
+    private func spaceShortage(for ids: [String]) -> String? {
+        let url = URL(fileURLWithPath: NSHomeDirectory())
+        guard let values = try? url.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
+              let available = values.volumeAvailableCapacityForImportantUsage else {
+            // 读不到剩余空间时不拦着；真写满了，压缩会失败并提示，原视频不会被删
+            return nil
+        }
+        let chosen = Set(ids)
+        let needs: [Int64] = items.filter { chosen.contains($0.id) }.map { item in
+            let output = item.info?.estimatedBytes(quality) ?? item.info?.fileBytes ?? 0
+            let download = item.needsDownload ? (item.info?.fileBytes ?? 0) : 0
+            return output + download
+        }
+        let margin: Int64 = 1_000_000_000
+        let required = needs.reduce(0, +) + margin
+        guard required > available else { return nil }
+
+        // 从占空间最大的开始去掉，算出大约要少选几个
+        var remaining = required
+        var removeCount = 0
+        for need in needs.sorted(by: >) where remaining > available {
+            remaining -= need
+            removeCount += 1
+        }
+        return "这批视频压缩时大约需要 \(VideoFormat.bytes(required)) 的空闲空间（原视频要等全部压完才删除），手机目前只剩 \(VideoFormat.bytes(available))。建议少选约 \(removeCount) 个视频，或先清理手机空间（包括清空“最近删除”）后再试。"
     }
 
     /// 逐个读取参数（不下载），读完一个显示一个
@@ -557,6 +602,14 @@ struct VideoProcessingView: View {
     @State private var deletedCopies: Set<String> = []
     @State private var pendingDecision: PendingDecision?
     @State private var copyDeletionError: String?
+    @State private var cancelFlag = CancelFlag()
+    @State private var isCancelling = false
+    @State private var showingCancelConfirm = false
+    @State private var background = VideoBackgroundRunner()
+    /// 后台继续压缩开启失败时的说明
+    @State private var backgroundError: String?
+    /// 压完了，等用户回到 App 确认删除
+    @State private var waitingForForeground = false
 
     var body: some View {
         Group {
@@ -567,10 +620,28 @@ struct VideoProcessingView: View {
                     Text(statusText)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    Text("压缩过程中请不要离开 App")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    if let backgroundError {
+                        Text(backgroundError)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                    } else if VideoBackgroundRunner.isSupported {
+                        Text("可以切到其他 App，压缩会在后台继续。压完后需要回到这里确认删除原视频。")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    } else {
+                        Text("压缩过程中请不要离开 App")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                     Spacer()
+                    if !waitingForForeground {
+                        Button("取消", role: .destructive) {
+                            showingCancelConfirm = true
+                        }
+                        .disabled(isCancelling)
+                    }
                 }
                 .padding()
             } else {
@@ -585,15 +656,47 @@ struct VideoProcessingView: View {
             started = true
             await run(identifiers)
         }
+        .confirmationDialog("确定要取消吗？", isPresented: $showingCancelConfirm, titleVisibility: .visible) {
+            Button("取消压缩", role: .destructive) {
+                cancel()
+            }
+            Button("继续压缩", role: .cancel) {}
+        } message: {
+            Text("正在压缩的这个会放弃，后面的不再处理，它们的原视频都保留不动。已经压好的仍会请你确认删除原视频。")
+        }
+    }
+
+    private func cancel() {
+        isCancelling = true
+        cancelFlag.cancel()
+        statusText = "正在取消…"
     }
 
     /// 压缩一批视频，然后一次性删除其中新视频已验证通过的原视频。第一次处理和"重试"都走这里。
     private func run(_ ids: [String]) async {
         isWorking = true
+        isCancelling = false
+        waitingForForeground = false
         progress = 0
         statusText = "准备中…"
-        // 压缩时不让屏幕自动锁定，否则 App 进入后台会中断压缩
+        // 压缩时不让屏幕自动锁定
         UIApplication.shared.isIdleTimerDisabled = true
+
+        // 每一批（包括重试）用新的取消开关
+        let cancel = CancelFlag()
+        cancelFlag = cancel
+        // 申请后台继续压缩（iOS 26 起）；用户在系统界面里取消时，等同于点了"取消"
+        background.onExpire = { [cancel] in
+            cancel.cancel()
+        }
+        backgroundError = nil
+        if VideoBackgroundRunner.isSupported {
+            do {
+                try background.start()
+            } catch {
+                backgroundError = "没能开启后台继续压缩（\(error.localizedDescription)），压缩过程中请不要离开 App。"
+            }
+        }
 
         let fetched = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         var assetsByID: [String: PHAsset] = [:]
@@ -604,24 +707,34 @@ struct VideoProcessingView: View {
         for (index, id) in ids.enumerated() {
             let step = "第 \(index + 1) / \(ids.count) 个"
             progress = Double(index) / total
+            if cancel.isCancelled {
+                // 取消后剩下的不再处理
+                batch.append(VideoJobResult(id: id, label: label(for: assetsByID[id]), errorMessage: VideoError.cancelled.message, isSkipped: true))
+                continue
+            }
             statusText = step
+            background.update(progress: progress, subtitle: step)
 
             guard let asset = assetsByID[id] else {
                 batch.append(VideoJobResult(id: id, label: "一个视频", errorMessage: "相册里找不到这个视频（可能已被删除）"))
                 continue
             }
-            let label = asset.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的视频" } ?? "一个视频"
+            let jobLabel = label(for: asset)
             do {
-                let result = try await VideoCompressor.compressAndSave(asset, quality: quality) { value, text in
+                let result = try await VideoCompressor.compressAndSave(asset, quality: quality, cancel: cancel) { value, text in
                     Task { @MainActor in
+                        guard !cancel.isCancelled else { return }
                         progress = (Double(index) + value) / total
                         statusText = "\(step)：\(text)"
+                        background.update(progress: progress, subtitle: "\(step)：\(text)")
                     }
                 }
-                batch.append(VideoJobResult(id: id, label: label, result: result))
+                // 记下来：万一 App 在删除原视频前被关掉，下次打开时提醒
+                VideoPendingStore.add(originalID: id, newID: result.newID)
+                batch.append(VideoJobResult(id: id, label: jobLabel, result: result))
             } catch {
                 let skipped = (error as? VideoError)?.isSkipped ?? false
-                batch.append(VideoJobResult(id: id, label: label, errorMessage: error.localizedDescription, isSkipped: skipped))
+                batch.append(VideoJobResult(id: id, label: jobLabel, errorMessage: error.localizedDescription, isSkipped: skipped))
             }
         }
 
@@ -634,15 +747,28 @@ struct VideoProcessingView: View {
             }
         }
 
+        // 压缩部分结束，告诉系统后台任务完成了
+        background.finish(success: true)
+
         // 只删除这一批里新视频已验证通过的原视频，放在一次操作里，系统只弹一次确认框
         let succeeded = batch.filter(\.succeeded)
         if !succeeded.isEmpty {
             progress = 1
+            // 系统删除确认框只能在 App 前台弹出：在后台压完的，等用户回来
+            if UIApplication.shared.applicationState != .active {
+                waitingForForeground = true
+                statusText = "压缩完成，请回到 App 确认删除原视频"
+                while UIApplication.shared.applicationState != .active {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                waitingForForeground = false
+            }
             statusText = "正在删除原视频…"
             let originalIDs = succeeded.map(\.id)
             do {
                 try await VideoCompressor.deleteAssets(identifiers: originalIDs)
                 deletedOriginals.formUnion(originalIDs)
+                VideoPendingStore.remove(originalIDs: originalIDs)
             } catch {
                 let reason = VideoCompressor.isUserCancelled(error)
                     ? "你在系统弹窗里没有允许删除。"
@@ -655,10 +781,15 @@ struct VideoProcessingView: View {
         isWorking = false
     }
 
+    private func label(for asset: PHAsset?) -> String {
+        asset?.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的视频" } ?? "一个视频"
+    }
+
     /// 原视频没删时，用户选择删除刚生成的新视频（同样会弹系统确认框）
     private func deleteCopies(_ decision: PendingDecision) async {
         do {
             try await VideoCompressor.deleteAssets(identifiers: decision.newIDs)
+            VideoPendingStore.remove(originalIDs: decision.originalIDs)
             deletedCopies.formUnion(decision.originalIDs)
             copyDeletionError = nil
             pendingDecision = nil
@@ -712,6 +843,7 @@ struct VideoProcessingView: View {
                     Text(pendingDecision.reason)
                     Text("\(pendingDecision.originalIDs.count) 个压缩后的新视频已经生成，原视频仍在。请选择怎么处理刚生成的新视频：")
                     Button("保留新视频") {
+                        VideoPendingStore.remove(originalIDs: pendingDecision.originalIDs)
                         self.pendingDecision = nil
                         copyDeletionError = nil
                     }

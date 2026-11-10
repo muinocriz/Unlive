@@ -17,6 +17,12 @@ struct ContentView: View {
     @State private var videoItems: [PhotosPickerItem] = []
     @State private var showingVideoPicker = false
     @State private var showingVideoConfirm = false
+    /// 上次没删完原视频的个数（App 中途被关掉时会出现）
+    @State private var pendingVideoCount = 0
+    @State private var showingPendingVideos = false
+    @State private var pendingVideoMessage: String?
+    /// 每次打开 App 只检查一次
+    private static var checkedPendingVideos = false
 
     var body: some View {
         NavigationStack {
@@ -115,6 +121,33 @@ struct ContentView: View {
             .onChange(of: showingVideoConfirm) {
                 if !showingVideoConfirm { videoItems = [] }
             }
+            .task {
+                guard !Self.checkedPendingVideos else { return }
+                Self.checkedPendingVideos = true
+                pendingVideoCount = VideoPendingStore.all().count
+                showingPendingVideos = pendingVideoCount > 0
+            }
+            .alert("上次有 \(pendingVideoCount) 个视频已压缩，原视频还没删除", isPresented: $showingPendingVideos) {
+                Button("删除原视频") {
+                    Task { await deletePendingVideos() }
+                }
+                Button("保留两份", role: .cancel) {
+                    VideoPendingStore.remove(originalIDs: VideoPendingStore.all().map(\.originalID))
+                }
+            } message: {
+                Text("可能是压缩时 App 被关闭了。压缩后的新视频已经保存在相册里。删除原视频时系统会请你确认，删除的视频会先放进“最近删除”，30 天内可恢复。")
+            }
+            .alert(
+                "提示",
+                isPresented: Binding(
+                    get: { pendingVideoMessage != nil },
+                    set: { if !$0 { pendingVideoMessage = nil } }
+                )
+            ) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(pendingVideoMessage ?? "")
+            }
             .alert(
                 "需要相册的完全访问权限",
                 isPresented: Binding(
@@ -148,6 +181,22 @@ struct ContentView: View {
             permissionMessage = "你只允许了访问部分照片。定格需要访问全部照片，才能找到选中的原图、生成静态照片并删除原图。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
         default:
             permissionMessage = "定格需要访问你的相册，才能生成静态照片并删除原图。请在设置里把照片权限改为“完全访问”（或“所有照片”）。"
+        }
+    }
+
+    /// 删除上次没删完的原视频（只删新视频还在的那些）
+    private func deletePendingVideos() async {
+        do {
+            let (deleted, missing) = try await VideoPendingStore.deletePendingOriginals()
+            var text = "已删除 \(deleted) 个原视频，清空“最近删除”后空间才会真正释放。"
+            if missing > 0 {
+                text += "另有 \(missing) 个压缩后的新视频已经找不到，对应的原视频没有删除。"
+            }
+            pendingVideoMessage = text
+        } catch {
+            pendingVideoMessage = VideoCompressor.isUserCancelled(error)
+                ? "你没有允许删除，原视频还在。下次打开 App 时会再提醒你。"
+                : "删除原视频失败：\(error.localizedDescription)。下次打开 App 时会再提醒你。"
         }
     }
 

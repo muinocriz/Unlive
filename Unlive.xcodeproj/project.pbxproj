@@ -244,8 +244,9 @@
 				DEVELOPMENT_TEAM = C8ZGCCZQV9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Unlive-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "定格";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "定格需要访问你的相册，用来把选中的实况照片转换成静态照片，并删除原来的实况照片。";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "定格需要访问你的相册，用来把选中的实况照片转换成静态照片、压缩选中的视频，并删除原来的照片和视频。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -278,8 +279,9 @@
 				DEVELOPMENT_TEAM = C8ZGCCZQV9;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Unlive-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "定格";
-				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "定格需要访问你的相册，用来把选中的实况照片转换成静态照片，并删除原来的实况照片。";
+				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "定格需要访问你的相册，用来把选中的实况照片转换成静态照片、压缩选中的视频，并删除原来的照片和视频。";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
