@@ -133,7 +133,7 @@ nonisolated enum VideoCompressor {
         // 不管成功失败，临时文件都不留在手机上（成功时它会被移进相册）
         defer { try? FileManager.default.removeItem(at: outputURL) }
 
-        try await compress(source, info: info, targetBitRate: target, to: outputURL) { fraction in
+        let compressWarnings = try await compress(source, info: info, targetBitRate: target, to: outputURL) { fraction in
             progress(fraction * 0.95, "正在压缩 \(Int(fraction * 100))%")
         }
 
@@ -151,7 +151,7 @@ nonisolated enum VideoCompressor {
             newBytes: newBytes,
             targetBitRate: target,
             seconds: Date().timeIntervalSince(startTime),
-            warnings: warnings
+            warnings: compressWarnings + warnings
         )
     }
 
@@ -256,10 +256,11 @@ nonisolated enum VideoCompressor {
         targetBitRate: Double,
         to outputURL: URL,
         progress: @escaping @Sendable (Double) -> Void
-    ) async throws {
+    ) async throws -> [String] {
         guard let videoTrack = try await source.loadTracks(withMediaType: .video).first else {
             throw VideoError(message: "这个视频里找不到画面")
         }
+        var warnings: [String] = []
         let audioTracks = try await source.loadTracks(withMediaType: .audio)
         let transform = try await videoTrack.load(.preferredTransform)
         let color = try await colorProperties(of: videoTrack)
@@ -296,21 +297,27 @@ nonisolated enum VideoCompressor {
         videoInput.expectsMediaDataInRealTime = false
         // 方向信息：竖拍的视频压缩后不能变横
         videoInput.transform = transform
+        // 画面轨道自己带的信息：镜头型号、焦距、光圈等（照片 App 的 ⓘ 里显示的镜头信息就在这里）
+        videoInput.metadata = try await videoTrack.load(.metadata)
 
         var pairs: [(AVAssetReaderOutput, AVAssetWriterInput)] = [(videoOutput, videoInput)]
+        // 原轨道 → 新轨道，用来恢复轨道之间的关联
+        var inputForTrack: [CMPersistentTrackID: AVAssetWriterInput] = [videoTrack.trackID: videoInput]
 
         // 音频：原样复制，不重新编码。有多条音轨（如空间音频）时全部带上，并保持"多选一"的关系
         var audioInputs: [AVAssetWriterInput] = []
         var defaultAudioInput: AVAssetWriterInput?
         for track in audioTracks {
-            let (formats, isEnabled) = try await track.load(.formatDescriptions, .isEnabled)
+            let (formats, isEnabled, trackMetadata) = try await track.load(.formatDescriptions, .isEnabled, .metadata)
             let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
             output.alwaysCopiesSampleData = false
             let input = AVAssetWriterInput(mediaType: .audio, outputSettings: nil, sourceFormatHint: formats.first)
             input.expectsMediaDataInRealTime = false
             input.marksOutputTrackAsEnabled = isEnabled
+            input.metadata = trackMetadata
             if isEnabled && defaultAudioInput == nil { defaultAudioInput = input }
             audioInputs.append(input)
+            inputForTrack[track.trackID] = input
             pairs.append((output, input))
         }
 
@@ -324,6 +331,40 @@ nonisolated enum VideoCompressor {
             }
             writer.add(input)
         }
+
+        // 逐帧附加信息（视频方向、人脸位置、场景亮度、音频混合用的信息等）：原样复制。
+        // 某一条复制不了时不让整个压缩失败，但要记下来告诉用户。
+        for track in try await source.loadTracks(withMediaType: .metadata) {
+            let (formats, isEnabled, trackMetadata) = try await track.load(.formatDescriptions, .isEnabled, .metadata)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
+            output.alwaysCopiesSampleData = false
+            let input = AVAssetWriterInput(mediaType: .metadata, outputSettings: nil, sourceFormatHint: formats.first)
+            input.expectsMediaDataInRealTime = false
+            input.marksOutputTrackAsEnabled = isEnabled
+            input.metadata = trackMetadata
+            guard reader.canAdd(output), writer.canAdd(input) else {
+                warnings.append("视频里的一项附加信息（\(Self.describe(formats.first))）没能保留")
+                continue
+            }
+            reader.add(output)
+            writer.add(input)
+            inputForTrack[track.trackID] = input
+            pairs.append((output, input))
+        }
+
+        // 恢复轨道之间的关联（比如附加信息属于哪条画面或声音）
+        for track in try await source.load(.tracks) {
+            guard let input = inputForTrack[track.trackID] else { continue }
+            for type in try await track.load(.availableTrackAssociationTypes) {
+                for related in try await track.loadAssociatedTracks(ofType: type) {
+                    if let relatedInput = inputForTrack[related.trackID],
+                       input.canAddTrackAssociation(withTrackOf: relatedInput, type: type.rawValue) {
+                        input.addTrackAssociation(withTrackOf: relatedInput, type: type.rawValue)
+                    }
+                }
+            }
+        }
+
         if audioInputs.count > 1 {
             let group = AVAssetWriterInputGroup(inputs: audioInputs, defaultInput: defaultAudioInput)
             if writer.canAdd(group) { writer.add(group) }
@@ -352,6 +393,15 @@ nonisolated enum VideoCompressor {
         guard writer.status == .completed else {
             throw VideoError(message: "压缩失败（可能是手机存储空间不足）：\(writer.error?.localizedDescription ?? "未知错误")")
         }
+        return warnings
+    }
+
+    /// 附加信息轨道的名字（如 com.apple.quicktime.video-orientation），用于提示
+    private static func describe(_ format: CMFormatDescription?) -> String {
+        guard let format, let ids = CMMetadataFormatDescriptionGetIdentifiers(format) as? [String], !ids.isEmpty else {
+            return "未知类型"
+        }
+        return ids.map { $0.components(separatedBy: "/").last ?? $0 }.joined(separator: "、")
     }
 
     /// 保存前检查压缩后的文件：能正常读取、能解出画面、时长与原片一致
