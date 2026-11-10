@@ -124,16 +124,6 @@ nonisolated enum VideoCompressor {
 
     // MARK: - 读取参数
 
-    /// 读取原视频的参数（只在 iCloud 上的会先下载）
-    static func inspect(
-        _ asset: PHAsset,
-        downloadProgress: @escaping @Sendable (Double) -> Void
-    ) async throws -> VideoInfo {
-        try checkSupported(asset)
-        let source = try await loadAVAsset(for: asset, downloadProgress: downloadProgress)
-        return try await readInfo(source, asset: asset)
-    }
-
     /// 确认页用：不下载，快速读取参数。
     /// 返回 info 为 nil 表示只在 iCloud 上、连文件大小也拿不到，只能等压缩时再看。
     static func quickInspect(_ asset: PHAsset) async -> (info: VideoInfo?, needsDownload: Bool) {

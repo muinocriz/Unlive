@@ -67,12 +67,6 @@ struct ContentView: View {
                         matching: videoPickerFilter,
                         photoLibrary: .shared()
                     )
-
-                    // 阶段 1 的单个视频测试页，暂时保留，方便对比画质
-                    NavigationLink("压缩视频（测试版）") {
-                        VideoTestView()
-                    }
-                    .font(.footnote)
                 } else {
                     Button {
                         Task { await checkPermissionThenContinue() }
