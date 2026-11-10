@@ -1,0 +1,96 @@
+# Unlive 视频压缩功能 MVP
+
+Nov 10, 2026 · @静默
+
+## 定位与目标
+
+在不改变分辨率和帧率的前提下降低视频码率，为相册腾出空间。参考值：iPhone 4K60 HEVC 原片约 58 Mbps（440MB/分钟），压缩后目标约 150–220MB/分钟。
+
+- 作为 Unlive 的第二个入口，与「实况照片」并列；代码做成独立模块，便于以后拆分。
+- 界面只给两档：「高画质 / 省空间」，不出现码率数字。
+- 待定：是否最终集成进 Unlive（目前是建议），以及是否调整 App 名称或定位。
+
+## 用户流程
+
+四步：选择、确认、压缩、收尾。核心原则是一条一条处理，全部验证通过后才删除原片。
+
+1. **选择**：用系统相册选择器（`PHPickerViewController`），只显示视频。用 `PHPickerFilter.not(...)` 排除 `.cinematicVideos`、`.spatialMedia`、`.slomoVideos`，避免丢失后期调焦、立体和变速信息。
+2. **确认页**：只读取选中的视频，每行显示缩略图、时长和三个标签，例如「4K · 60fps · 建议压缩」，下方写「1.4GB → 约 650MB」。
+   - 分辨率：按短边只分 4K / 1080p。
+   - 帧率档：平均帧率 ≥ 45 显示 60fps，否则 30fps。
+   - 建议：「建议压缩」或「无需压缩」；后者默认不勾选。
+   - 需要从 iCloud 下载的标注「需下载」。
+   - 底部汇总：共可节省多少、预计耗时（按每分钟视频约 30 秒估算）。
+3. **压缩**：逐条处理，压完一条立即保存为新资源并做验证（能正常读取、时长与原片一致），通过后放入待删除队列。
+4. **收尾**：全部完成后用一次 `deleteAssets` 统一删除原片，系统只确认一次。完成页提示：「已节省 X GB，清空『最近删除』后生效」。
+
+## 压缩规则
+
+目标码率 = min(档位值, 原码率 × 0.7)；若原码率已低于目标，标为「无需压缩」并跳过。下表为起点值，以实测画质为准调整。
+
+| 原视频 | 高画质 (Mbps) | 省空间 (Mbps) |
+| --- | --- | --- |
+| 4K 60fps | 30 | 20 |
+| 4K 30fps | 20 | 14 |
+| 1080p 60fps | 12 | 8 |
+| 1080p 30fps | 8 | 5 |
+
+**读取参数**（都在视频轨 `AVAssetTrack` 上）
+
+- 原码率：`estimatedDataRate`，单位 bit/s，是不含音频的平均码率。
+- 帧率：`nominalFrameRate` 为平均帧率，自动帧率视频可能是 27.3 这类值；≥ 45 归入 60fps 档。
+- 分辨率与时长：直接用 `PHAsset.pixelWidth/pixelHeight` 和 `duration`。
+- 预计大小 = 目标码率 × 时长 ÷ 8，再加音频。
+
+**编码参数**
+
+- 硬件 HEVC 编码（VideoToolbox），Main10（10bit），保留 HLG HDR 色彩标记；杜比视界动态元数据会丢失，属已知取舍。
+- 音频直接复制，不重新编码。
+- 用 `AVAssetWriter` 沿用原片每帧时间戳，不设固定帧率，可变帧率原样保留。
+- 保存方式：新建资源 + 删除原片。不要用 `PHContentEditingOutput` 编辑保存，系统会保留原片，空间不会释放。
+
+## 稳定性
+
+不限制批量总时长，靠后台任务和逐条保存来保证中途被打断也不会前功尽弃。
+
+- **后台继续**：用 `BGContinuedProcessingTask`（iOS 26 起），切到后台后继续压缩，系统显示进度并允许取消。
+- **前台防锁屏**：压缩期间设 `isIdleTimerDisabled = true`。
+- **长任务提醒**：预计超过 10 分钟时提示「建议接上电源」，只提醒不禁止。
+- **空间检查**：开始前用 `volumeAvailableCapacityForImportantUsage` 确认剩余空间放得下预计输出。
+- **iCloud 原片**：读取时设 `isNetworkAccessAllowed = true`，并显示下载进度。
+
+## 元数据保留
+
+压缩后的视频必须出现在图库里原片的位置，而不是压缩当天。相册层和文件层两层都要写。
+
+**相册层**（决定在「照片」里的位置）
+
+```swift
+let request = PHAssetCreationRequest.forAsset()
+request.addResource(with: .video, fileURL: outputURL, options: nil)
+request.creationDate = original.creationDate
+request.location = original.location
+request.isFavorite = original.isFavorite
+```
+
+- 还要把新视频加回原片所在的全部相簿，这一点不会自动继承。
+
+**文件层**（导出、AirDrop 后仍然正确）
+
+- `AVAssetWriter` 写文件时：`writer.metadata = try await sourceAsset.load(.metadata)`，复制拍摄时间（带时区）、GPS、机型、镜头等。
+
+正常现象：「最近保存」相簿按加入时间排序，新视频会出现在那里最前面，不影响图库位置。
+
+## 待实测清单
+
+在 iPhone 17（iOS 27）上用真实相册测试，元数据和删除前验证两项优先，处理不好会丢用户数据。
+
+- [ ] 元数据：用一段去年拍的、带定位的视频压缩（先不删原片），确认新视频在图库里紧挨原片，ℹ 信息中的日期、位置、机型和镜头一致。
+- [ ] 元数据：两个文件 AirDrop 到 Mac，用 `exiftool -a -G1` 对比完整字段。
+- [ ] 时区：用一段跨时区拍的视频，确认时间没有偏移。
+- [ ] 相簿与收藏：原片所在相簿和收藏标记在新视频上都恢复了。
+- [ ] 删除前验证：故意制造失败（中途取消、空间不足），确认原片不会被删。
+- [ ] 速度：每分钟 4K60 视频的压缩耗时，以及切到后台后是否降速。
+- [ ] 后台：`BGContinuedProcessingTask` 在长批量下能否跑完。
+- [ ] 画质：两档码率在各分辨率、帧率下的实际观感，按需调整码率表。
+- [ ] HDR：压缩后在相册里仍显示为 HDR，画面不发灰。
