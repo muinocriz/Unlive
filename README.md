@@ -1,6 +1,16 @@
-# Unlive（定格）
+<p align="center">
+  <img src="docs/screenshots/icon_light.png" width="128" alt="定格 App 图标">
+</p>
 
-为 iPhone 相册腾出空间，两个功能：
+<h1 align="center">Unlive（定格）</h1>
+
+<p align="center">为 iPhone 相册腾出空间</p>
+
+<p align="center">
+  <img src="docs/screenshots/home-in-iPhone17.JPG" width="280" alt="定格首页">
+</p>
+
+两个功能：
 
 - **实况照片 → 静态照片**：无损转成静态照片，删掉视频部分。
 - **压缩视频**：不改分辨率和帧率，只降低码率，生成新视频并删除原视频。4K60 视频大约能省一半空间。
@@ -27,6 +37,12 @@
 - **编辑过的照片**：按编辑后的样子生成，处理前会提醒"无法复原编辑"，可以选择跳过
 - **iCloud 照片**：原图只在 iCloud 时会自动下载
 
+<p align="center">
+  <img src="docs/screenshots/livephoto-unlive.JPG" alt="实况照片转静态照片：首页 → 选择实况照片 → 确认 → 处理结果">
+  <br>
+  <sub>首页 → 选择实况照片 → 确认可释放空间 → 处理结果</sub>
+</p>
+
 ## 功能：压缩视频
 
 - **只降码率**：分辨率、帧率、每一帧的时间都不变，用手机的硬件 HEVC（10bit）编码；声音原样复制，不重新压缩
@@ -36,6 +52,12 @@
 - **先验证后删除**：每个新视频保存后都会检查能否正常读取、时长是否和原视频一致，通过的才删原视频，系统只弹一次确认框
 - **稳定可靠**：开始前检查剩余空间；可以中途取消；iOS 26 起可以切到后台继续压缩；App 中途被关掉，下次打开会提醒处理没删完的原视频
 - **iCloud 视频**：原视频只在 iCloud 时会自动下载
+
+<p align="center">
+  <img src="docs/screenshots/video-compress.JPG" alt="压缩视频：选择视频 → 确认页 → 正在压缩 → 压缩结果">
+  <br>
+  <sub>选择视频 → 确认页（选画质、看能省多少）→ 正在压缩（可切到后台）→ 压缩结果</sub>
+</p>
 
 ## 共同点
 
