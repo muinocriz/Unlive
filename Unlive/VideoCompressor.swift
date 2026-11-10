@@ -102,6 +102,8 @@ nonisolated struct VideoCompressionResult: Sendable {
 /// 压缩失败的原因，文字直接展示给用户
 nonisolated struct VideoError: LocalizedError {
     let message: String
+    /// true 表示不是出错，而是这个视频不需要或不适合处理（结果页算"跳过"，不提供重试）
+    var isSkipped = false
     var errorDescription: String? { message }
 }
 
@@ -185,7 +187,7 @@ nonisolated enum VideoCompressor {
         }
         let info = try await readInfo(source, asset: asset)
         guard let target = info.targetBitRate(quality) else {
-            throw VideoError(message: "这个视频的码率已经很低，无需压缩")
+            throw VideoError(message: "下载原片后发现码率已经很低，无需压缩，已跳过", isSkipped: true)
         }
 
         let outputURL = FileManager.default.temporaryDirectory
@@ -216,24 +218,41 @@ nonisolated enum VideoCompressor {
         )
     }
 
+    // MARK: - 删除
+
+    /// 在一次 performChanges 里删除这些视频，系统只弹一次确认框。用户点"不允许"会抛出错误。
+    static func deleteAssets(identifiers: [String]) async throws {
+        let assets = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+        guard assets.count > 0 else { return }
+        try await PHPhotoLibrary.shared().performChanges {
+            PHAssetChangeRequest.deleteAssets(assets)
+        }
+    }
+
+    /// 是不是用户在系统删除弹窗里点了"不允许"
+    static func isUserCancelled(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == PHPhotosErrorDomain && nsError.code == PHPhotosError.userCancelled.rawValue
+    }
+
     // MARK: - 内部步骤
 
     /// 这些视频无法删除或会丢信息，不处理
     private static func checkSupported(_ asset: PHAsset) throws {
         guard asset.mediaType == .video else {
-            throw VideoError(message: "这不是视频")
+            throw VideoError(message: "这不是视频", isSkipped: true)
         }
         guard asset.sourceType == .typeUserLibrary else {
-            throw VideoError(message: "这个视频来自共享相簿或电脑同步，无法删除原片，已跳过")
+            throw VideoError(message: "这个视频来自共享相簿或电脑同步，无法删除原片，已跳过", isSkipped: true)
         }
         if asset.mediaSubtypes.contains(.videoCinematic) {
-            throw VideoError(message: "电影效果视频压缩后会丢失后期调焦信息，已跳过")
+            throw VideoError(message: "电影效果视频压缩后会丢失后期调焦信息，已跳过", isSkipped: true)
         }
         if asset.mediaSubtypes.contains(.videoHighFrameRate) {
-            throw VideoError(message: "慢动作视频压缩后会丢失变速信息，已跳过")
+            throw VideoError(message: "慢动作视频压缩后会丢失变速信息，已跳过", isSkipped: true)
         }
         if #available(iOS 18.0, *), asset.mediaSubtypes.contains(.spatialMedia) {
-            throw VideoError(message: "空间视频压缩后会丢失立体信息，已跳过")
+            throw VideoError(message: "空间视频压缩后会丢失立体信息，已跳过", isSkipped: true)
         }
     }
 

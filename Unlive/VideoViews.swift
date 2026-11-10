@@ -362,6 +362,10 @@ struct VideoConfirmView: View {
                         .multilineTextAlignment(.center)
                 }
             }
+            Text("压缩完成后，系统会请你确认删除原视频。删除的视频会先放进“最近删除”，30 天内可恢复。")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
             Button {
                 if editedSelected.isEmpty {
                     start(selected.map(\.id))
@@ -523,20 +527,36 @@ struct VideoJobResult: Identifiable {
     let label: String
     var result: VideoCompressionResult?
     var errorMessage: String?
+    /// 不需要或不适合处理（如码率已经很低），不算失败，也不提供重试
+    var isSkipped = false
     var succeeded: Bool { result != nil }
+    var failed: Bool { result == nil && !isSkipped }
 }
 
-/// 阶段 2：逐个压缩并保存为新视频，原视频暂不删除（删除在阶段 3 加入）
+/// 逐个压缩并保存为新视频，全部完成后一次删除验证通过的原视频
 struct VideoProcessingView: View {
     let identifiers: [String]
     let quality: VideoQuality
     let onFinish: () -> Void
+
+    /// 原视频没删成时（用户点了"不允许"或出错），等用户决定怎么处理刚生成的新视频
+    struct PendingDecision {
+        let reason: String
+        let originalIDs: [String]
+        let newIDs: [String]
+    }
 
     @State private var started = false
     @State private var isWorking = true
     @State private var progress: Double = 0
     @State private var statusText = "准备中…"
     @State private var results: [VideoJobResult] = []
+    /// 已删除原视频的（按原视频 ID 记）
+    @State private var deletedOriginals: Set<String> = []
+    /// 用户选择删除了新视频的（按原视频 ID 记）
+    @State private var deletedCopies: Set<String> = []
+    @State private var pendingDecision: PendingDecision?
+    @State private var copyDeletionError: String?
 
     var body: some View {
         Group {
@@ -563,25 +583,31 @@ struct VideoProcessingView: View {
         .task {
             guard !started else { return }
             started = true
-            await run()
+            await run(identifiers)
         }
     }
 
-    private func run() async {
+    /// 压缩一批视频，然后一次性删除其中新视频已验证通过的原视频。第一次处理和"重试"都走这里。
+    private func run(_ ids: [String]) async {
+        isWorking = true
+        progress = 0
+        statusText = "准备中…"
         // 压缩时不让屏幕自动锁定，否则 App 进入后台会中断压缩
         UIApplication.shared.isIdleTimerDisabled = true
-        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: identifiers, options: nil)
+
+        let fetched = PHAsset.fetchAssets(withLocalIdentifiers: ids, options: nil)
         var assetsByID: [String: PHAsset] = [:]
         fetched.enumerateObjects { asset, _, _ in assetsByID[asset.localIdentifier] = asset }
-        let total = Double(identifiers.count)
+        let total = Double(ids.count)
 
-        for (index, id) in identifiers.enumerated() {
-            let step = "第 \(index + 1) / \(identifiers.count) 个"
+        var batch: [VideoJobResult] = []
+        for (index, id) in ids.enumerated() {
+            let step = "第 \(index + 1) / \(ids.count) 个"
             progress = Double(index) / total
             statusText = step
 
             guard let asset = assetsByID[id] else {
-                results.append(VideoJobResult(id: id, label: "一个视频", errorMessage: "相册里找不到这个视频（可能已被删除）"))
+                batch.append(VideoJobResult(id: id, label: "一个视频", errorMessage: "相册里找不到这个视频（可能已被删除）"))
                 continue
             }
             let label = asset.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的视频" } ?? "一个视频"
@@ -592,9 +618,36 @@ struct VideoProcessingView: View {
                         statusText = "\(step)：\(text)"
                     }
                 }
-                results.append(VideoJobResult(id: id, label: label, result: result))
+                batch.append(VideoJobResult(id: id, label: label, result: result))
             } catch {
-                results.append(VideoJobResult(id: id, label: label, errorMessage: error.localizedDescription))
+                let skipped = (error as? VideoError)?.isSkipped ?? false
+                batch.append(VideoJobResult(id: id, label: label, errorMessage: error.localizedDescription, isSkipped: skipped))
+            }
+        }
+
+        // 重试的结果替换掉原来那条记录
+        for job in batch {
+            if let index = results.firstIndex(where: { $0.id == job.id }) {
+                results[index] = job
+            } else {
+                results.append(job)
+            }
+        }
+
+        // 只删除这一批里新视频已验证通过的原视频，放在一次操作里，系统只弹一次确认框
+        let succeeded = batch.filter(\.succeeded)
+        if !succeeded.isEmpty {
+            progress = 1
+            statusText = "正在删除原视频…"
+            let originalIDs = succeeded.map(\.id)
+            do {
+                try await VideoCompressor.deleteAssets(identifiers: originalIDs)
+                deletedOriginals.formUnion(originalIDs)
+            } catch {
+                let reason = VideoCompressor.isUserCancelled(error)
+                    ? "你在系统弹窗里没有允许删除。"
+                    : "删除原视频时出错：\(error.localizedDescription)"
+                pendingDecision = PendingDecision(reason: reason, originalIDs: originalIDs, newIDs: succeeded.compactMap { $0.result?.newID })
             }
         }
 
@@ -602,14 +655,34 @@ struct VideoProcessingView: View {
         isWorking = false
     }
 
+    /// 原视频没删时，用户选择删除刚生成的新视频（同样会弹系统确认框）
+    private func deleteCopies(_ decision: PendingDecision) async {
+        do {
+            try await VideoCompressor.deleteAssets(identifiers: decision.newIDs)
+            deletedCopies.formUnion(decision.originalIDs)
+            copyDeletionError = nil
+            pendingDecision = nil
+        } catch {
+            copyDeletionError = VideoCompressor.isUserCancelled(error)
+                ? "你没有允许删除，新视频仍然保留着。"
+                : "删除新视频失败：\(error.localizedDescription)"
+        }
+    }
+
     private var resultList: some View {
         let succeeded = results.filter(\.succeeded)
-        let failed = results.filter { !$0.succeeded }
-        let saved = succeeded.reduce(Int64(0)) { total, job in
+        let failed = results.filter(\.failed)
+        let skipped = results.filter(\.isSkipped)
+        let warnings = succeeded.flatMap { $0.result?.warnings ?? [] }
+        let deleted = succeeded.filter { deletedOriginals.contains($0.id) }
+        let undoneCount = succeeded.filter { deletedCopies.contains($0.id) }.count
+        let pendingCount = pendingDecision?.originalIDs.count ?? 0
+        let keptCount = succeeded.count - deleted.count - undoneCount - pendingCount
+        // 只算原视频真的删掉了的
+        let saved = deleted.reduce(Int64(0)) { total, job in
             guard let r = job.result, let original = r.originalBytes else { return total }
             return total + max(original - r.newBytes, 0)
         }
-        let warnings = succeeded.flatMap { $0.result?.warnings ?? [] }
 
         return List {
             Section {
@@ -619,11 +692,46 @@ struct VideoProcessingView: View {
                     Label("失败 \(failed.count) 个", systemImage: "xmark.circle.fill")
                         .foregroundStyle(.red)
                 }
-                if !succeeded.isEmpty {
-                    Text("删除原视频后可节省 \(VideoFormat.bytes(saved))")
+                if !skipped.isEmpty {
+                    Label("跳过 \(skipped.count) 个", systemImage: "minus.circle.fill")
+                        .foregroundStyle(.secondary)
                 }
-            } footer: {
-                Text("当前为测试阶段：新视频已保存，原视频还没有删除。")
+                if !deleted.isEmpty {
+                    Text("其中 \(deleted.count) 个原视频已删除")
+                }
+                if keptCount > 0 {
+                    Text("其中 \(keptCount) 个保留了压缩后的新视频，原视频也还在")
+                }
+                if undoneCount > 0 {
+                    Text("其中 \(undoneCount) 个已删除刚生成的新视频，原视频还在")
+                }
+            }
+
+            if let pendingDecision {
+                Section("原视频没有删除") {
+                    Text(pendingDecision.reason)
+                    Text("\(pendingDecision.originalIDs.count) 个压缩后的新视频已经生成，原视频仍在。请选择怎么处理刚生成的新视频：")
+                    Button("保留新视频") {
+                        self.pendingDecision = nil
+                        copyDeletionError = nil
+                    }
+                    Button("删除刚生成的新视频", role: .destructive) {
+                        Task { await deleteCopies(pendingDecision) }
+                    }
+                    if let copyDeletionError {
+                        Text(copyDeletionError)
+                            .foregroundStyle(.red)
+                    }
+                }
+            }
+
+            if !deleted.isEmpty {
+                Section {
+                    Text("已节省 \(VideoFormat.bytes(saved))，清空“最近删除”后生效")
+                        .font(.headline)
+                    Label("原视频已移到“最近删除”，30 天内可恢复。去照片 App 的“相簿”页，在最下面找到“最近删除”并清空后，空间才会真正释放。", systemImage: "info.circle")
+                        .font(.subheadline)
+                }
             }
 
             if !succeeded.isEmpty {
@@ -642,13 +750,36 @@ struct VideoProcessingView: View {
             }
 
             if !failed.isEmpty {
-                Section("失败原因") {
+                Section {
                     ForEach(failed) { job in
                         VStack(alignment: .leading, spacing: 4) {
                             Text(job.label)
                             Text(job.errorMessage ?? "未知错误")
                                 .font(.footnote)
                                 .foregroundStyle(.red)
+                        }
+                    }
+                    Button("重试失败的 \(failed.count) 个") {
+                        Task { await run(failed.map(\.id)) }
+                    }
+                    .disabled(pendingDecision != nil)
+                } header: {
+                    Text("失败原因")
+                } footer: {
+                    if pendingDecision != nil {
+                        Text("请先处理上面的新视频，再重试")
+                    }
+                }
+            }
+
+            if !skipped.isEmpty {
+                Section("跳过的视频（原视频保留不动）") {
+                    ForEach(skipped) { job in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(job.label)
+                            Text(job.errorMessage ?? "")
+                                .font(.footnote)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
