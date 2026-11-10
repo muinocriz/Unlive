@@ -69,6 +69,14 @@ nonisolated struct VideoInfo: Sendable {
         return min(tier, videoBitRate * 0.7)
     }
 
+    /// 预计耗时（秒）。实测 4K60 视频压缩用时约等于视频时长；
+    /// 分辨率、帧率更低的按每秒要处理的像素数等比例缩短（最少按时长的 1/4 算）
+    var estimatedSeconds: Double {
+        let pixelsPerSecond = Double(width * height) * Double(frameRate)
+        let fourK60 = 3840.0 * 2160.0 * 60.0
+        return duration * max(pixelsPerSecond / fourK60, 0.25)
+    }
+
     /// 预计压缩后的大小（字节）= 目标码率 × 时长 ÷ 8，再加音频
     func estimatedBytes(_ quality: VideoQuality) -> Int64? {
         guard let target = targetBitRate(quality) else { return nil }
@@ -489,6 +497,8 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
     private var finished: Set<Int> = []
     private var aborted = false
     private var continuation: CheckedContinuation<Bool, Never>?
+    /// 上次通知界面的进度；只在画面轨道的线程上读写
+    private var lastReported: Double = -1
 
     init(pairs: [(AVAssetReaderOutput, AVAssetWriterInput)], duration: Double, progress: @escaping @Sendable (Double) -> Void) {
         self.pairs = pairs
@@ -517,10 +527,17 @@ nonisolated private final class SampleCopier: @unchecked Sendable {
                 complete(index)
                 return
             }
-            // 第 0 条是画面，用它的时间算进度
+            // 第 0 条是画面，用它的时间算进度。每涨 1% 才通知一次界面，
+            // 否则每一帧都刷新界面（4K60 每秒几十次），会让 App 很卡
             if index == 0, duration > 0 {
                 let seconds = CMSampleBufferGetPresentationTimeStamp(sample).seconds
-                if seconds.isFinite { progress(min(max(seconds / duration, 0), 1)) }
+                if seconds.isFinite {
+                    let fraction = min(max(seconds / duration, 0), 1)
+                    if fraction - lastReported >= 0.01 {
+                        lastReported = fraction
+                        progress(fraction)
+                    }
+                }
             }
             if !input.append(sample) {
                 abort()

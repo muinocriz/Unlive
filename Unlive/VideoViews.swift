@@ -60,7 +60,7 @@ struct VideoTestView: View {
                     if let target = info.targetBitRate(quality), let estimate = info.estimatedBytes(quality) {
                         row("目标码率", String(format: "%.1f Mbps", target / 1_000_000))
                         row("预计大小", "约 \(formatBytes(estimate))")
-                        row("预计耗时", "约 \(formatDuration(info.duration / 2))")
+                        row("预计耗时", "约 \(formatDuration(info.estimatedSeconds))")
                         Button("开始压缩") {
                             Task { await compress() }
                         }
