@@ -39,6 +39,11 @@ struct ContentView: View {
                             .padding(.vertical, 6)
                     }
                     .buttonStyle(.borderedProminent)
+
+                    // 视频压缩的临时入口（阶段 1 测试用），阶段 2 改成正式的双入口
+                    NavigationLink("压缩视频（测试版）") {
+                        VideoTestView()
+                    }
                 } else {
                     Button {
                         Task { await checkPermissionThenContinue() }
