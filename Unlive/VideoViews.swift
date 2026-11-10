@@ -785,6 +785,21 @@ struct VideoProcessingView: View {
         asset?.creationDate.map { "拍摄于 \($0.formatted(date: .abbreviated, time: .shortened)) 的视频" } ?? "一个视频"
     }
 
+    /// 原视频没删时，用户选择再删一次原视频（系统会再弹一次确认框）
+    private func deleteOriginalsAgain(_ decision: PendingDecision) async {
+        do {
+            try await VideoCompressor.deleteAssets(identifiers: decision.originalIDs)
+            deletedOriginals.formUnion(decision.originalIDs)
+            VideoPendingStore.remove(originalIDs: decision.originalIDs)
+            copyDeletionError = nil
+            pendingDecision = nil
+        } catch {
+            copyDeletionError = VideoCompressor.isUserCancelled(error)
+                ? "你没有允许删除，原视频仍在。"
+                : "删除原视频失败：\(error.localizedDescription)"
+        }
+    }
+
     /// 原视频没删时，用户选择删除刚生成的新视频（同样会弹系统确认框）
     private func deleteCopies(_ decision: PendingDecision) async {
         do {
@@ -841,8 +856,12 @@ struct VideoProcessingView: View {
             if let pendingDecision {
                 Section("原视频没有删除") {
                     Text(pendingDecision.reason)
-                    Text("\(pendingDecision.originalIDs.count) 个压缩后的新视频已经生成，原视频仍在。请选择怎么处理刚生成的新视频：")
-                    Button("保留新视频") {
+                    Text("\(pendingDecision.originalIDs.count) 个压缩后的新视频已经生成，原视频仍在。请选择怎么处理：")
+                    // 刚才误点了"不允许"时，可以再删一次原视频（系统会再弹一次确认框）
+                    Button("删除原视频") {
+                        Task { await deleteOriginalsAgain(pendingDecision) }
+                    }
+                    Button("保留新视频（两份都留着）") {
                         VideoPendingStore.remove(originalIDs: pendingDecision.originalIDs)
                         self.pendingDecision = nil
                         copyDeletionError = nil

@@ -432,6 +432,20 @@ struct ProcessingView: View {
     }
 
     /// 原图没删时，用户选择删除刚生成的副本（同样会弹系统确认框）
+    /// 原图没删时，用户选择再删一次原图（系统会再弹一次确认框）
+    private func deleteOriginalsAgain(_ decision: PendingDecision) async {
+        do {
+            try await LivePhotoConverter.deleteAssets(identifiers: decision.originalIDs)
+            deletedOriginals.formUnion(decision.originalIDs)
+            copyDeletionError = nil
+            pendingDecision = nil
+        } catch {
+            copyDeletionError = LivePhotoConverter.isUserCancelled(error)
+                ? "你没有允许删除，原实况照片仍在。"
+                : "删除原图失败：\(error.localizedDescription)"
+        }
+    }
+
     private func deleteCopies(_ decision: PendingDecision) async {
         do {
             try await LivePhotoConverter.deleteAssets(identifiers: decision.copyIDs)
@@ -476,8 +490,12 @@ struct ProcessingView: View {
             if let pendingDecision {
                 Section("原图没有删除") {
                     Text(pendingDecision.reason)
-                    Text("\(pendingDecision.originalIDs.count) 张静态副本已经生成，原实况照片仍在。请选择怎么处理刚生成的副本：")
-                    Button("保留副本") {
+                    Text("\(pendingDecision.originalIDs.count) 张静态副本已经生成，原实况照片仍在。请选择怎么处理：")
+                    // 刚才误点了"不允许"时，可以再删一次原图（系统会再弹一次确认框）
+                    Button("删除原实况照片") {
+                        Task { await deleteOriginalsAgain(pendingDecision) }
+                    }
+                    Button("保留副本（两份都留着）") {
                         self.pendingDecision = nil
                         copyDeletionError = nil
                     }
